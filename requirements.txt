@@ -1,6 +1,6 @@
 # speech to text and text to speech
-realtimestt==0.3.104
-realtimetts[kokoro,coqui,orpheus]==0.5.5
+realtimestt
+realtimetts[kokoro,coqui,orpheus,openai]
 
 # webserver dependencies
 fastapi
@@ -12,3 +12,7 @@ python-dotenv
 # llm providers
 ollama
 openai
+
+# Kyutai/Moshi dependencies
+sphn<0.2
+moshi==0.2.11

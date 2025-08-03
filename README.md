@@ -1,16 +1,15 @@
-
 # Real-Time AI Voice Chat 🎤💬🧠🔊
 
-**Have a natural, spoken conversation with an AI!**  
+**Have a natural, spoken conversation with an AI!**
 
 This project lets you chat with a Large Language Model (LLM) using just your voice, receiving spoken responses in near real-time. Think of it as your own digital conversation partner.
 
 https://github.com/user-attachments/assets/16cc29a7-bec2-4dd0-a056-d213db798d8f
 
-*(early preview - first reasonably stable version)*
+_(early preview - first reasonably stable version)_
 
 > ❗ **Project Status: Community-Driven**
-> 
+>
 > This project is no longer being actively maintained by me due to time constraints. I've taken on too many projects and I have to step back. I will no longer be implementing new features or providing user support.
 >
 > I will continue to review and merge high-quality, well-written Pull Requests from the community from time to time. Your contributions are welcome and appreciated!
@@ -29,43 +28,43 @@ A sophisticated client-server system built for low-latency interaction:
 
 ## Key Features ✨
 
-*   **Fluid Conversation:** Speak and listen, just like a real chat.
-*   **Real-Time Feedback:** See partial transcriptions and AI responses as they happen.
-*   **Low Latency Focus:** Optimized architecture using audio chunk streaming.
-*   **Smart Turn-Taking:** Dynamic silence detection (`turndetect.py`) adapts to the conversation pace.
-*   **Flexible AI Brains:** Pluggable LLM backends (Ollama default, OpenAI support via `llm_module.py`).
-*   **Customizable Voices:** Choose from different Text-to-Speech engines (Kokoro, Coqui, Orpheus via `audio_module.py`).
-*   **Web Interface:** Clean and simple UI using Vanilla JS and the Web Audio API.
-*   **Dockerized Deployment:** Recommended setup using Docker Compose for easier dependency management.
+- **Fluid Conversation:** Speak and listen, just like a real chat.
+- **Real-Time Feedback:** See partial transcriptions and AI responses as they happen.
+- **Low Latency Focus:** Optimized architecture using audio chunk streaming.
+- **Smart Turn-Taking:** Dynamic silence detection (`turndetect.py`) adapts to the conversation pace.
+- **Flexible AI Brains:** Pluggable LLM backends (Ollama default, OpenAI support via `llm_module.py`).
+- **Customizable Voices:** Choose from different Text-to-Speech engines (Kokoro, Coqui, Orpheus via `audio_module.py`).
+- **Web Interface:** Clean and simple UI using Vanilla JS and the Web Audio API.
+- **Dockerized Deployment:** Recommended setup using Docker Compose for easier dependency management.
 
 ## Technology Stack 🛠️
 
-*   **Backend:** Python < 3.13, FastAPI
-*   **Frontend:** HTML, CSS, JavaScript (Vanilla JS, Web Audio API, AudioWorklets)
-*   **Communication:** WebSockets
-*   **Containerization:** Docker, Docker Compose
-*   **Core AI/ML Libraries:**
-    *   `RealtimeSTT` (Speech-to-Text)
-    *   `RealtimeTTS` (Text-to-Speech)
-    *   `transformers` (Turn detection, Tokenization)
-    *   `torch` / `torchaudio` (ML Framework)
-    *   `ollama` / `openai` (LLM Clients)
-*   **Audio Processing:** `numpy`, `scipy`
+- **Backend:** Python < 3.13, FastAPI
+- **Frontend:** HTML, CSS, JavaScript (Vanilla JS, Web Audio API, AudioWorklets)
+- **Communication:** WebSockets
+- **Containerization:** Docker, Docker Compose
+- **Core AI/ML Libraries:**
+  - `RealtimeSTT` (Speech-to-Text)
+  - `RealtimeTTS` (Text-to-Speech)
+  - `transformers` (Turn detection, Tokenization)
+  - `torch` / `torchaudio` (ML Framework)
+  - `ollama` / `openai` (LLM Clients)
+- **Audio Processing:** `numpy`, `scipy`
 
 ## Before You Dive In: Prerequisites 🏊‍♀️
 
 This project leverages powerful AI models, which have some requirements:
 
-*   **Operating System:**
-    *   **Docker:** Linux is recommended for the best GPU integration with Docker.
-    *   **Manual:** The provided script (`install.bat`) is for Windows. Manual steps are possible on Linux/macOS but may require more troubleshooting (especially for DeepSpeed).
-*   **🐍 Python:** 3.9 or higher (if setting up manually).
-*   **🚀 GPU:** **A powerful CUDA-enabled NVIDIA GPU is *highly recommended***, especially for faster STT (Whisper) and TTS (Coqui). Performance on CPU-only or weaker GPUs will be significantly slower.
-    *   The setup assumes **CUDA 12.1**. Adjust PyTorch installation if you have a different CUDA version.
-    *   **Docker (Linux):** Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-*   **🐳 Docker (Optional but Recommended):** Docker Engine and Docker Compose v2+ for the containerized setup.
-*   **🧠 Ollama (Optional):** If using the Ollama backend *without* Docker, install it separately and pull your desired models. The Docker setup includes an Ollama service.
-*   **🔑 OpenAI API Key (Optional):** If using the OpenAI backend, set the `OPENAI_API_KEY` environment variable (e.g., in a `.env` file or passed to Docker).
+- **Operating System:**
+  - **Docker:** Linux is recommended for the best GPU integration with Docker.
+  - **Manual:** The provided script (`install.bat`) is for Windows. Manual steps are possible on Linux/macOS but may require more troubleshooting (especially for DeepSpeed).
+- **🐍 Python:** 3.9 or higher (if setting up manually).
+- **🚀 GPU:** **A powerful CUDA-enabled NVIDIA GPU is _highly recommended_**, especially for faster STT (Whisper) and TTS (Coqui). Performance on CPU-only or weaker GPUs will be significantly slower.
+  - The setup assumes **CUDA 12.1**. Adjust PyTorch installation if you have a different CUDA version.
+  - **Docker (Linux):** Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- **🐳 Docker (Optional but Recommended):** Docker Engine and Docker Compose v2+ for the containerized setup.
+- **🧠 Ollama (Optional):** If using the Ollama backend _without_ Docker, install it separately and pull your desired models. The Docker setup includes an Ollama service.
+- **🔑 OpenAI API Key (Optional):** If using the OpenAI backend, set the `OPENAI_API_KEY` environment variable (e.g., in a `.env` file or passed to Docker).
 
 ---
 
@@ -86,21 +85,26 @@ Now, choose your adventure:
 This is the most straightforward method, bundling the application, dependencies, and even Ollama into manageable containers.
 
 1.  **Build the Docker images:**
-    *(This takes time! It downloads base images, installs Python/ML dependencies, and pre-downloads the default STT model.)*
+    _(This takes time! It downloads base images, installs Python/ML dependencies, and pre-downloads the default STT model.)_
+
     ```bash
     docker compose build
     ```
-    *(If you want to customize models/settings in `code/*.py`, do it **before** this step!)*
+
+    _(If you want to customize models/settings in `src/_.py`, do it **before** this step!)\*
 
 2.  **Start the services (App & Ollama):**
-    *(Runs containers in the background. GPU access is configured in `docker-compose.yml`.)*
+    _(Runs containers in the background. GPU access is configured in `docker-compose.yml`.)_
+
     ```bash
     docker compose up -d
     ```
+
     Give them a minute to initialize.
 
 3.  **(Crucial!) Pull your desired Ollama Model:**
     *(This is done *after* startup to keep the main app image smaller and allow model changes without rebuilding. Execute this command to pull the default model into the running Ollama container.)*
+
     ```bash
     # Pull the default model (adjust if you configured a different one in server.py)
     docker compose exec ollama ollama pull hf.co/bartowski/huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated-GGUF:Q4_K_M
@@ -110,19 +114,21 @@ This is the most straightforward method, bundling the application, dependencies,
     ```
 
 4.  **Stopping the Services:**
+
     ```bash
     docker compose down
     ```
 
 5.  **Restarting:**
+
     ```bash
     docker compose up -d
     ```
 
 6.  **Viewing Logs / Debugging:**
-    *   Follow app logs: `docker compose logs -f app`
-    *   Follow Ollama logs: `docker compose logs -f ollama`
-    *   Save logs to file: `docker compose logs app > app_logs.txt`
+    - Follow app logs: `docker compose logs -f app`
+    - Follow Ollama logs: `docker compose logs -f ollama`
+    - Save logs to file: `docker compose logs app > app_logs.txt`
 
 </details>
 
@@ -138,12 +144,13 @@ This method requires managing the Python environment yourself. It offers more di
     ```batch
     install.bat
     ```
-    *(This opens a new command prompt within the activated virtual environment.)*
+    _(This opens a new command prompt within the activated virtual environment.)_
     Proceed to the **"Running the Application"** section.
 
 **B2) Manual Steps (Linux/macOS/Windows):**
 
 1.  **Create & Activate Virtual Environment:**
+
     ```bash
     python -m venv venv
     # Linux/macOS:
@@ -153,32 +160,35 @@ This method requires managing the Python environment yourself. It offers more di
     ```
 
 2.  **Upgrade Pip:**
+
     ```bash
     python -m pip install --upgrade pip
     ```
 
 3.  **Navigate to Code Directory:**
+
     ```bash
     cd code
     ```
 
 4.  **Install PyTorch (Crucial Step - Match Your Hardware!):**
-    *   **With NVIDIA GPU (CUDA 12.1 Example):**
-        ```bash
-        # Verify your CUDA version! Adjust 'cu121' and the URL if needed.
-        pip install torch==2.5.1+cu121 torchaudio==2.5.1+cu121 torchvision --index-url https://download.pytorch.org/whl/cu121
-        ```
-    *   **CPU Only (Expect Slow Performance):**
-        ```bash
-        # pip install torch torchaudio torchvision
-        ```
-    *   *Find other PyTorch versions:* [https://pytorch.org/get-started/previous-versions/](https://pytorch.org/get-started/previous-versions/)
+
+    - **With NVIDIA GPU (CUDA 12.1 Example):**
+      ```bash
+      # Verify your CUDA version! Adjust 'cu121' and the URL if needed.
+      pip install torch==2.5.1+cu121 torchaudio==2.5.1+cu121 torchvision --index-url https://download.pytorch.org/whl/cu121
+      ```
+    - **CPU Only (Expect Slow Performance):**
+      ```bash
+      # pip install torch torchaudio torchvision
+      ```
+    - _Find other PyTorch versions:_ [https://pytorch.org/get-started/previous-versions/](https://pytorch.org/get-started/previous-versions/)
 
 5.  **Install Other Requirements:**
     ```bash
     pip install -r requirements.txt
     ```
-    *   **Note on DeepSpeed:** The `requirements.txt` may include DeepSpeed. Installation can be complex, especially on Windows. The `install.bat` tries a precompiled wheel. If manual installation fails, you might need to build it from source or consult resources like [deepspeedpatcher](https://github.com/erew123/deepspeedpatcher) (use at your own risk). Coqui TTS performance benefits most from DeepSpeed.
+    - **Note on DeepSpeed:** The `requirements.txt` may include DeepSpeed. Installation can be complex, especially on Windows. The `install.bat` tries a precompiled wheel. If manual installation fails, you might need to build it from source or consult resources like [deepspeedpatcher](https://github.com/erew123/deepspeedpatcher) (use at your own risk). Coqui TTS performance benefits most from DeepSpeed.
 
 </details>
 
@@ -215,33 +225,33 @@ Your application is already running via `docker compose up -d`! Check logs using
 
 ## Configuration Deep Dive 🔧
 
-Want to tweak the AI's voice, brain, or how it listens? Modify the Python files in the `code/` directory.
+Want to tweak the AI's voice, brain, or how it listens? Modify the Python files in the `src/` directory.
 
-**⚠️ Important Docker Note:** If using Docker, make any configuration changes *before* running `docker compose build` to ensure they are included in the image.
+**⚠️ Important Docker Note:** If using Docker, make any configuration changes _before_ running `docker compose build` to ensure they are included in the image.
 
-*   **TTS Engine & Voice (`server.py`, `audio_module.py`):**
-    *   Change `START_ENGINE` in `server.py` to `"coqui"`, `"kokoro"`, or `"orpheus"`.
-    *   Adjust engine-specific settings (e.g., voice model path for Coqui, speaker ID for Orpheus, speed) within `AudioProcessor.__init__` in `audio_module.py`.
-*   **LLM Backend & Model (`server.py`, `llm_module.py`):**
-    *   Set `LLM_START_PROVIDER` (`"ollama"` or `"openai"`) and `LLM_START_MODEL` (e.g., `"hf.co/..."` for Ollama, model name for OpenAI) in `server.py`. Remember to pull the Ollama model if using Docker (see Installation Step A3).
-    *   Customize the AI's personality by editing `system_prompt.txt`.
-*   **STT Settings (`transcribe.py`):**
-    *   Modify `DEFAULT_RECORDER_CONFIG` to change the Whisper model (`model`), language (`language`), silence thresholds (`silence_limit_seconds`), etc. The default `base.en` model is pre-downloaded during the Docker build.
-*   **Turn Detection Sensitivity (`turndetect.py`):**
-    *   Adjust pause duration constants within the `TurnDetector.update_settings` method.
-*   **SSL/HTTPS (`server.py`):**
-    *   Set `USE_SSL = True` and provide paths to your certificate (`SSL_CERT_PATH`) and key (`SSL_KEY_PATH`) files.
-    *   **Docker Users:** You'll need to adjust `docker-compose.yml` to map the SSL port (e.g., 443) and potentially mount your certificate files as volumes.
-    <details>
-    <summary><strong>Generating Local SSL Certificates (Windows Example w/ mkcert)</strong></summary>
+- **TTS Engine & Voice (`server.py`, `audio_module.py`):**
+  - Change `START_ENGINE` in `server.py` to `"coqui"`, `"kokoro"`, or `"orpheus"`.
+  - Adjust engine-specific settings (e.g., voice model path for Coqui, speaker ID for Orpheus, speed) within `AudioProcessor.__init__` in `audio_module.py`.
+- **LLM Backend & Model (`server.py`, `llm_module.py`):**
+  - Set `LLM_START_PROVIDER` (`"ollama"` or `"openai"`) and `LLM_START_MODEL` (e.g., `"hf.co/..."` for Ollama, model name for OpenAI) in `server.py`. Remember to pull the Ollama model if using Docker (see Installation Step A3).
+  - Customize the AI's personality by editing `system_prompt.txt`.
+- **STT Settings (`transcribe.py`):**
+  - Modify `DEFAULT_RECORDER_CONFIG` to change the Whisper model (`model`), language (`language`), silence thresholds (`silence_limit_seconds`), etc. The default `base.en` model is pre-downloaded during the Docker build.
+- **Turn Detection Sensitivity (`turndetect.py`):**
+  - Adjust pause duration constants within the `TurnDetector.update_settings` method.
+- **SSL/HTTPS (`server.py`):**
 
-    1.  Install Chocolatey package manager if you haven't already.
-    2.  Install mkcert: `choco install mkcert`
-    3.  Run Command Prompt *as Administrator*.
-    4.  Install a local Certificate Authority: `mkcert -install`
-    5.  Generate certs (replace `your.local.ip`): `mkcert localhost 127.0.0.1 ::1 your.local.ip`
-        *   This creates `.pem` files (e.g., `localhost+3.pem` and `localhost+3-key.pem`) in the current directory. Update `SSL_CERT_PATH` and `SSL_KEY_PATH` in `server.py` accordingly. Remember to potentially mount these into your Docker container.
-    </details>
+  - Set `USE_SSL = True` and provide paths to your certificate (`SSL_CERT_PATH`) and key (`SSL_KEY_PATH`) files.
+  - **Docker Users:** You'll need to adjust `docker-compose.yml` to map the SSL port (e.g., 443) and potentially mount your certificate files as volumes.
+  <details>
+  <summary><strong>Generating Local SSL Certificates (Windows Example w/ mkcert)</strong></summary>
+
+  1.  Install Chocolatey package manager if you haven't already.
+  2.  Install mkcert: `choco install mkcert`
+  3.  Run Command Prompt _as Administrator_.
+  4.  Install a local Certificate Authority: `mkcert -install`
+  5.  Generate certs (replace `your.local.ip`): `mkcert localhost 127.0.0.1 ::1 your.local.ip` \* This creates `.pem` files (e.g., `localhost+3.pem` and `localhost+3-key.pem`) in the current directory. Update `SSL_CERT_PATH` and `SSL_KEY_PATH` in `server.py` accordingly. Remember to potentially mount these into your Docker container.
+  </details>
 
 ---
 

@@ -61,7 +61,7 @@ RUN pip install --no-cache-dir --prefer-binary -r requirements.txt \
 RUN pip install --no-cache-dir "ctranslate2<4.5.0"
 
 # Copy the application code
-COPY --chown=1001:1001 code/ ./code/
+COPY --chown=1001:1001 src/ ./src/
 
 # --- Stage 2: Runtime Stage ---
 # Base image still needs CUDA toolkit for PyTorch/DeepSpeed/etc in the app
@@ -93,14 +93,14 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 &
     update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
 
 # Set working directory for the application
-WORKDIR /app/code
+WORKDIR /app/src
 
 # Copy installed Python packages from the builder stage
 RUN mkdir -p /usr/local/lib/python3.10/dist-packages
 COPY --chown=1001:1001 --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
 
 # Copy the application code from the builder stage
-COPY --chown=1001:1001 --from=builder /app/code /app/code
+COPY --chown=1001:1001 --from=builder /app/src /app/src
 
 # <<<--- Keep other model pre-downloads --->>>
 # <<<--- Silero VAD Pre-download --->>>

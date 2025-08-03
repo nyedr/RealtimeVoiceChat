@@ -1,78 +1,83 @@
-# server.py
-from queue import Queue, Empty
+import os
+import sys
+import threading  # Keep threading for SpeechPipelineManager internals and AbortWorker
+import time
+import json
+import struct
+import asyncio
+import uvicorn
 import logging
-from logsetup import setup_logging
+from typing import Any, Dict
+from contextlib import asynccontextmanager
+from starlette.responses import HTMLResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from datetime import datetime
+from queue import Empty
+from .colors import Colors
+from .logsetup import setup_logging
+from .upsample_overlap import UpsampleOverlap
+
+# Import modules that might affect logging first
+from .speech_pipeline_manager import SpeechPipelineManager
+from .audio_in import AudioInputProcessor
+
+# Setup logging after all imports
 setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
-if __name__ == "__main__":
-    logger.info("🖥️👋 Welcome to local real-time voice chat")
 
-from upsample_overlap import UpsampleOverlap
-from datetime import datetime
-from colors import Colors
-import uvicorn
-import asyncio
-import struct
-import json
-import time
-import threading # Keep threading for SpeechPipelineManager internals and AbortWorker
-import sys
-import os # Added for environment variable access
-
-from typing import Any, Dict, Optional, Callable # Added for type hints in docstrings
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from starlette.responses import HTMLResponse, Response, FileResponse
+# Logging is now properly configured with custom formatter
+logger.info("🖥️👋 Welcome to local real-time voice chat")
 
 USE_SSL = False
 TTS_START_ENGINE = "orpheus"
 TTS_START_ENGINE = "kokoro"
 TTS_START_ENGINE = "coqui"
+TTS_START_ENGINE = "kyutai"
 TTS_ORPHEUS_MODEL = "Orpheus_3B-1BaseGGUF/mOrpheus_3B-1Base_Q4_K_M.gguf"
 TTS_ORPHEUS_MODEL = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf"
 
 LLM_START_PROVIDER = "ollama"
-#LLM_START_MODEL = "qwen3:30b-a3b"
-LLM_START_MODEL = "hf.co/bartowski/huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated-GGUF:Q4_K_M"
-# LLM_START_PROVIDER = "lmstudio"
-# LLM_START_MODEL = "Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-Q3_K_L.gguf"
-NO_THINK = False
-DIRECT_STREAM = TTS_START_ENGINE=="orpheus"
+LLM_START_MODEL = "qwen2.5vl:7b"
 
-if __name__ == "__main__":
-    logger.info(f"🖥️⚙️ {Colors.apply('[PARAM]').blue} Starting engine: {Colors.apply(TTS_START_ENGINE).blue}")
-    logger.info(f"🖥️⚙️ {Colors.apply('[PARAM]').blue} Direct streaming: {Colors.apply('ON' if DIRECT_STREAM else 'OFF').blue}")
+LLM_START_PROVIDER = "lmstudio"
+LLM_START_MODEL = "lmstudio-community/model@q4_k_m"
+
+NO_THINK = False
+DIRECT_STREAM = TTS_START_ENGINE in ["orpheus", "kyutai"]
+
+logger.info(
+    f"🖥️⚙️ {Colors.apply('[PARAM]').blue} Starting engine: {Colors.apply(TTS_START_ENGINE).blue}")
+logger.info(
+    f"🖥️⚙️ {Colors.apply('[PARAM]').blue} Direct streaming: {Colors.apply('ON' if DIRECT_STREAM else 'OFF').blue}")
 
 # Define the maximum allowed size for the incoming audio queue
 try:
     MAX_AUDIO_QUEUE_SIZE = int(os.getenv("MAX_AUDIO_QUEUE_SIZE", 50))
-    if __name__ == "__main__":
-        logger.info(f"🖥️⚙️ {Colors.apply('[PARAM]').blue} Audio queue size limit set to: {Colors.apply(str(MAX_AUDIO_QUEUE_SIZE)).blue}")
+    logger.info(
+        f"🖥️⚙️ {Colors.apply('[PARAM]').blue} Audio queue size limit set to: {Colors.apply(str(MAX_AUDIO_QUEUE_SIZE)).blue}")
 except ValueError:
-    if __name__ == "__main__":
-        logger.warning("🖥️⚠️ Invalid MAX_AUDIO_QUEUE_SIZE env var. Using default: 50")
+    logger.warning(
+        "🖥️⚠️ Invalid MAX_AUDIO_QUEUE_SIZE env var. Using default: 50")
     MAX_AUDIO_QUEUE_SIZE = 50
 
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-#from handlerequests import LanguageProcessor
-#from audio_out import AudioOutProcessor
-from audio_in import AudioInputProcessor
-from speech_pipeline_manager import SpeechPipelineManager
-from colors import Colors
+# from handlerequests import LanguageProcessor
+# from audio_out import AudioOutProcessor
 
 LANGUAGE = "en"
 # TTS_FINAL_TIMEOUT = 0.5 # unsure if 1.0 is needed for stability
-TTS_FINAL_TIMEOUT = 1.0 # unsure if 1.0 is needed for stability
+TTS_FINAL_TIMEOUT = 1.0  # unsure if 1.0 is needed for stability
 
 # --------------------------------------------------------------------
 # Custom no-cache StaticFiles
 # --------------------------------------------------------------------
+
+
 class NoCacheStaticFiles(StaticFiles):
     """
     Serves static files without allowing client-side caching.
@@ -80,6 +85,7 @@ class NoCacheStaticFiles(StaticFiles):
     Overrides the default Starlette StaticFiles to add 'Cache-Control' headers
     that prevent browsers from caching static assets. Useful for development.
     """
+
     async def get_response(self, path: str, scope: Dict[str, Any]) -> Response:
         """
         Gets the response for a requested path, adding no-cache headers.
@@ -95,14 +101,16 @@ class NoCacheStaticFiles(StaticFiles):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         # These might not be strictly necessary with no-store, but belt and suspenders
         if "etag" in response.headers:
-             response.headers.__delitem__("etag")
+            response.headers.__delitem__("etag")
         if "last-modified" in response.headers:
-             response.headers.__delitem__("last-modified")
+            response.headers.__delitem__("last-modified")
         return response
 
 # --------------------------------------------------------------------
 # Lifespan management
 # --------------------------------------------------------------------
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -127,10 +135,11 @@ async def lifespan(app: FastAPI):
     app.state.Upsampler = UpsampleOverlap()
     app.state.AudioInputProcessor = AudioInputProcessor(
         LANGUAGE,
-        is_orpheus=TTS_START_ENGINE=="orpheus",
-        pipeline_latency=app.state.SpeechPipelineManager.full_output_pipeline_latency / 1000, # seconds
+        is_orpheus=TTS_START_ENGINE in ["orpheus", "kyutai"],
+        pipeline_latency=app.state.SpeechPipelineManager.full_output_pipeline_latency / 1000,  # seconds
     )
-    app.state.Aborting = False # Keep this? Its usage isn't clear in the provided snippet. Minimizing changes.
+    # Keep this? Its usage isn't clear in the provided snippet. Minimizing changes.
+    app.state.Aborting = False
 
     yield
 
@@ -152,7 +161,8 @@ app.add_middleware(
 )
 
 # Mount static files with no cache
-app.mount("/static", NoCacheStaticFiles(directory="static"), name="static")
+app.mount("/static", NoCacheStaticFiles(directory="src/static"), name="static")
+
 
 @app.get("/favicon.ico")
 async def favicon():
@@ -162,7 +172,8 @@ async def favicon():
     Returns:
         A FileResponse containing the favicon.
     """
-    return FileResponse("static/favicon.ico")
+    return FileResponse("src/static/favicon.ico")
+
 
 @app.get("/")
 async def get_index() -> HTMLResponse:
@@ -174,13 +185,15 @@ async def get_index() -> HTMLResponse:
     Returns:
         An HTMLResponse containing the content of index.html.
     """
-    with open("static/index.html", "r", encoding="utf-8") as f:
+    with open("src/static/index.html", "r", encoding="utf-8") as f:
         html_content = f.read()
     return HTMLResponse(content=html_content)
 
 # --------------------------------------------------------------------
 # Utility functions
 # --------------------------------------------------------------------
+
+
 def parse_json_message(text: str) -> dict:
     """
     Safely parses a JSON string into a dictionary.
@@ -198,6 +211,7 @@ def parse_json_message(text: str) -> dict:
     except json.JSONDecodeError:
         logger.warning("🖥️⚠️ Ignoring client message with invalid JSON")
         return {}
+
 
 def format_timestamp_ns(timestamp_ns: int) -> str:
     """
@@ -229,6 +243,7 @@ def format_timestamp_ns(timestamp_ns: int) -> str:
 # WebSocket data processing
 # --------------------------------------------------------------------
 
+
 async def process_incoming_data(ws: WebSocket, app: FastAPI, incoming_chunks: asyncio.Queue, callbacks: 'TranscriptionCallbacks') -> None:
     """
     Receives messages via WebSocket, processes audio and text messages.
@@ -253,7 +268,8 @@ async def process_incoming_data(ws: WebSocket, app: FastAPI, incoming_chunks: as
 
                 # Ensure we have at least an 8‑byte header: 4 bytes timestamp_ms + 4 bytes flags
                 if len(raw) < 8:
-                    logger.warning("🖥️⚠️ Received packet too short for 8‑byte header.")
+                    logger.warning(
+                        "🖥️⚠️ Received packet too short for 8‑byte header.")
                     continue
 
                 # Unpack big‑endian uint32 timestamp (ms) and uint32 flags
@@ -271,7 +287,8 @@ async def process_incoming_data(ws: WebSocket, app: FastAPI, incoming_chunks: as
                 # Record server receive time
                 server_ns = time.time_ns()
                 metadata["server_received"] = server_ns
-                metadata["server_received_formatted"] = format_timestamp_ns(server_ns)
+                metadata["server_received_formatted"] = format_timestamp_ns(
+                    server_ns)
 
                 # The rest of the payload is raw PCM bytes
                 metadata["pcm"] = raw[8:]
@@ -293,7 +310,6 @@ async def process_incoming_data(ws: WebSocket, app: FastAPI, incoming_chunks: as
                 msg_type = data.get("type")
                 logger.info(Colors.apply(f"🖥️📥 ←←Client: {data}").orange)
 
-
                 if msg_type == "tts_start":
                     logger.info("🖥️ℹ️ Received tts_start from client.")
                     # Update connection-specific state via callbacks
@@ -312,17 +328,21 @@ async def process_incoming_data(ws: WebSocket, app: FastAPI, incoming_chunks: as
                     turn_detection = app.state.AudioInputProcessor.transcriber.turn_detection
                     if turn_detection:
                         turn_detection.update_settings(speed_factor)
-                        logger.info(f"🖥️⚙️ Updated turn detection settings to factor: {speed_factor:.2f}")
-
+                        logger.info(
+                            f"🖥️⚙️ Updated turn detection settings to factor: {speed_factor:.2f}")
 
     except asyncio.CancelledError:
-        pass # Task cancellation is expected on disconnect
+        pass  # Task cancellation is expected on disconnect
     except WebSocketDisconnect as e:
-        logger.warning(f"🖥️⚠️ {Colors.apply('WARNING').red} disconnect in process_incoming_data: {repr(e)}")
+        logger.warning(
+            f"🖥️⚠️ {Colors.apply('WARNING').red} disconnect in process_incoming_data: {repr(e)}")
     except RuntimeError as e:  # Often raised on closed transports
-        logger.error(f"🖥️💥 {Colors.apply('RUNTIME_ERROR').red} in process_incoming_data: {repr(e)}")
+        logger.error(
+            f"🖥️💥 {Colors.apply('RUNTIME_ERROR').red} in process_incoming_data: {repr(e)}")
     except Exception as e:
-        logger.exception(f"🖥️💥 {Colors.apply('EXCEPTION').red} in process_incoming_data: {repr(e)}")
+        logger.exception(
+            f"🖥️💥 {Colors.apply('EXCEPTION').red} in process_incoming_data: {repr(e)}")
+
 
 async def send_text_messages(ws: WebSocket, message_queue: asyncio.Queue) -> None:
     """
@@ -337,20 +357,24 @@ async def send_text_messages(ws: WebSocket, message_queue: asyncio.Queue) -> Non
     """
     try:
         while True:
-            await asyncio.sleep(0.001) # Yield control
+            await asyncio.sleep(0.001)  # Yield control
             data = await message_queue.get()
             msg_type = data.get("type")
             if msg_type != "tts_chunk":
                 logger.info(Colors.apply(f"🖥️📤 →→Client: {data}").orange)
             await ws.send_json(data)
     except asyncio.CancelledError:
-        pass # Task cancellation is expected on disconnect
+        pass  # Task cancellation is expected on disconnect
     except WebSocketDisconnect as e:
-        logger.warning(f"🖥️⚠️ {Colors.apply('WARNING').red} disconnect in send_text_messages: {repr(e)}")
+        logger.warning(
+            f"🖥️⚠️ {Colors.apply('WARNING').red} disconnect in send_text_messages: {repr(e)}")
     except RuntimeError as e:  # Often raised on closed transports
-        logger.error(f"🖥️💥 {Colors.apply('RUNTIME_ERROR').red} in send_text_messages: {repr(e)}")
+        logger.error(
+            f"🖥️💥 {Colors.apply('RUNTIME_ERROR').red} in send_text_messages: {repr(e)}")
     except Exception as e:
-        logger.exception(f"🖥️💥 {Colors.apply('EXCEPTION').red} in send_text_messages: {repr(e)}")
+        logger.exception(
+            f"🖥️💥 {Colors.apply('EXCEPTION').red} in send_text_messages: {repr(e)}")
+
 
 async def _reset_interrupt_flag_async(app: FastAPI, callbacks: 'TranscriptionCallbacks'):
     """
@@ -367,11 +391,14 @@ async def _reset_interrupt_flag_async(app: FastAPI, callbacks: 'TranscriptionCal
     await asyncio.sleep(1)
     # Check the AudioInputProcessor's own interrupted state
     if app.state.AudioInputProcessor.interrupted:
-        logger.info(f"{Colors.apply('🖥️🎙️ ▶️ Microphone continued (async reset)').cyan}")
+        logger.info(
+            f"{Colors.apply('🖥️🎙️ ▶️ Microphone continued (async reset)').cyan}")
         app.state.AudioInputProcessor.interrupted = False
         # Reset connection-specific interruption time via callbacks
         callbacks.interruption_time = 0
-        logger.info(Colors.apply("🖥️🎙️ interruption flag reset after TTS chunk (async)").cyan)
+        logger.info(Colors.apply(
+            "🖥️🎙️ interruption flag reset after TTS chunk (async)").cyan)
+
 
 async def send_tts_chunks(app: FastAPI, message_queue: asyncio.Queue, callbacks: 'TranscriptionCallbacks') -> None:
     """
@@ -394,15 +421,17 @@ async def send_tts_chunks(app: FastAPI, message_queue: asyncio.Queue, callbacks:
         prev_status = None
 
         while True:
-            await asyncio.sleep(0.001) # Yield control
+            await asyncio.sleep(0.001)  # Yield control
 
             # Use connection-specific interruption_time via callbacks
             if app.state.AudioInputProcessor.interrupted and callbacks.interruption_time and time.time() - callbacks.interruption_time > 2.0:
                 app.state.AudioInputProcessor.interrupted = False
-                callbacks.interruption_time = 0 # Reset via callbacks
-                logger.info(Colors.apply("🖥️🎙️ interruption flag reset after 2 seconds").cyan)
+                callbacks.interruption_time = 0  # Reset via callbacks
+                logger.info(Colors.apply(
+                    "🖥️🎙️ interruption flag reset after 2 seconds").cyan)
 
-            is_tts_finished = app.state.SpeechPipelineManager.is_valid_gen() and app.state.SpeechPipelineManager.running_generation.audio_quick_finished
+            is_tts_finished = app.state.SpeechPipelineManager.is_valid_gen(
+            ) and app.state.SpeechPipelineManager.running_generation.audio_quick_finished
 
             def log_status():
                 nonlocal prev_status
@@ -417,20 +446,24 @@ async def send_tts_chunks(app: FastAPI, message_queue: asyncio.Queue, callbacks:
                     int(callbacks.tts_to_client),
                     int(callbacks.tts_client_playing),
                     int(callbacks.tts_chunk_sent),
-                    1, # Placeholder?
-                    int(callbacks.is_hot), # from callbacks
-                    int(callbacks.synthesis_started), # from callbacks
-                    int(app.state.SpeechPipelineManager.running_generation is not None), # Global manager state
-                    int(app.state.SpeechPipelineManager.is_valid_gen()), # Global manager state
-                    int(is_tts_finished), # Calculated local variable
-                    int(app.state.AudioInputProcessor.interrupted) # Input processor state
+                    1,  # Placeholder?
+                    int(callbacks.is_hot),  # from callbacks
+                    int(callbacks.synthesis_started),  # from callbacks
+                    # Global manager state
+                    int(app.state.SpeechPipelineManager.running_generation is not None),
+                    # Global manager state
+                    int(app.state.SpeechPipelineManager.is_valid_gen()),
+                    int(is_tts_finished),  # Calculated local variable
+                    # Input processor state
+                    int(app.state.AudioInputProcessor.interrupted)
                 )
 
                 if curr_status != prev_status:
                     status = Colors.apply("🖥️🚦 State ").red
                     logger.info(
                         f"{status} ToClient {curr_status[0]}, "
-                        f"ttsClientON {curr_status[1]}, " # Renamed slightly for clarity
+                        # Renamed slightly for clarity
+                        f"ttsClientON {curr_status[1]}, "
                         f"ChunkSent {curr_status[2]}, "
                         f"hot {curr_status[4]}, synth {curr_status[5]}"
                         f" gen {curr_status[6]}"
@@ -474,14 +507,16 @@ async def send_tts_chunks(app: FastAPI, message_queue: asyncio.Queue, callbacks:
                 audio_final_finished = app.state.SpeechPipelineManager.running_generation.audio_final_finished
 
                 if not final_expected or audio_final_finished:
-                    logger.info("🖥️🏁 Sending of TTS chunks and 'user request/assistant answer' cycle finished.")
-                    callbacks.send_final_assistant_answer() # Callbacks method
+                    logger.info(
+                        "🖥️🏁 Sending of TTS chunks and 'user request/assistant answer' cycle finished.")
+                    callbacks.send_final_assistant_answer()  # Callbacks method
 
-                    assistant_answer = app.state.SpeechPipelineManager.running_generation.quick_answer + app.state.SpeechPipelineManager.running_generation.final_answer                    
+                    assistant_answer = app.state.SpeechPipelineManager.running_generation.quick_answer + \
+                        app.state.SpeechPipelineManager.running_generation.final_answer
                     app.state.SpeechPipelineManager.running_generation = None
 
-                    callbacks.tts_chunk_sent = False # Reset via callbacks
-                    callbacks.reset_state() # Reset connection state via callbacks
+                    callbacks.tts_chunk_sent = False  # Reset via callbacks
+                    callbacks.reset_state()  # Reset connection state via callbacks
 
                 await asyncio.sleep(0.001)
                 log_status()
@@ -497,18 +532,22 @@ async def send_tts_chunks(app: FastAPI, message_queue: asyncio.Queue, callbacks:
             # Use connection-specific state via callbacks
             if not callbacks.tts_chunk_sent:
                 # Use the async helper function instead of a thread
-                asyncio.create_task(_reset_interrupt_flag_async(app, callbacks))
+                asyncio.create_task(
+                    _reset_interrupt_flag_async(app, callbacks))
 
-            callbacks.tts_chunk_sent = True # Set via callbacks
+            callbacks.tts_chunk_sent = True  # Set via callbacks
 
     except asyncio.CancelledError:
-        pass # Task cancellation is expected on disconnect
+        pass  # Task cancellation is expected on disconnect
     except WebSocketDisconnect as e:
-        logger.warning(f"🖥️⚠️ {Colors.apply('WARNING').red} disconnect in send_tts_chunks: {repr(e)}")
+        logger.warning(
+            f"🖥️⚠️ {Colors.apply('WARNING').red} disconnect in send_tts_chunks: {repr(e)}")
     except RuntimeError as e:
-        logger.error(f"🖥️💥 {Colors.apply('RUNTIME_ERROR').red} in send_tts_chunks: {repr(e)}")
+        logger.error(
+            f"🖥️💥 {Colors.apply('RUNTIME_ERROR').red} in send_tts_chunks: {repr(e)}")
     except Exception as e:
-        logger.exception(f"🖥️💥 {Colors.apply('EXCEPTION').red} in send_tts_chunks: {repr(e)}")
+        logger.exception(
+            f"🖥️💥 {Colors.apply('EXCEPTION').red} in send_tts_chunks: {repr(e)}")
 
 
 # --------------------------------------------------------------------
@@ -524,6 +563,7 @@ class TranscriptionCallbacks:
     `message_queue` and manages interaction logic like interruptions and final answer delivery.
     It also includes a threaded worker to handle abort checks based on partial transcription.
     """
+
     def __init__(self, app: FastAPI, message_queue: asyncio.Queue):
         """
         Initializes the TranscriptionCallbacks instance for a WebSocket connection.
@@ -556,14 +596,14 @@ class TranscriptionCallbacks:
         self.is_processing_final: bool = False
         self.last_inferred_transcription: str = ""
         self.final_assistant_answer_sent: bool = False
-        self.partial_transcription: str = "" # Added for clarity
+        self.partial_transcription: str = ""  # Added for clarity
 
-        self.reset_state() # Call reset to ensure consistency
+        self.reset_state()  # Call reset to ensure consistency
 
         self.abort_request_event = threading.Event()
-        self.abort_worker_thread = threading.Thread(target=self._abort_worker, name="AbortWorker", daemon=True)
+        self.abort_worker_thread = threading.Thread(
+            target=self._abort_worker, name="AbortWorker", daemon=True)
         self.abort_worker_thread.start()
-
 
     def reset_state(self):
         """Resets connection-specific state flags and variables to their initial values."""
@@ -590,18 +630,20 @@ class TranscriptionCallbacks:
         # Keep the abort call related to the audio processor/pipeline manager
         self.app.state.AudioInputProcessor.abort_generation()
 
-
     def _abort_worker(self):
         """Background thread worker to check for abort conditions based on partial text."""
         while True:
-            was_set = self.abort_request_event.wait(timeout=0.1) # Check every 100ms
+            was_set = self.abort_request_event.wait(
+                timeout=0.1)  # Check every 100ms
             if was_set:
                 self.abort_request_event.clear()
                 # Only trigger abort check if the text actually changed
                 if self.last_abort_text != self.abort_text:
                     self.last_abort_text = self.abort_text
-                    logger.debug(f"🖥️🧠 Abort check triggered by partial: '{self.abort_text}'")
-                    self.app.state.SpeechPipelineManager.check_abort(self.abort_text, False, "on_partial")
+                    logger.debug(
+                        f"🖥️🧠 Abort check triggered by partial: '{self.abort_text}'")
+                    self.app.state.SpeechPipelineManager.check_abort(
+                        self.abort_text, False, "on_partial")
 
     def on_partial(self, txt: str):
         """
@@ -613,12 +655,13 @@ class TranscriptionCallbacks:
         Args:
             txt: The partial transcription text.
         """
-        self.final_assistant_answer_sent = False # New user speech invalidates previous final answer sending state
-        self.final_transcription = "" # Clear final transcription as this is partial
+        self.final_assistant_answer_sent = False  # New user speech invalidates previous final answer sending state
+        self.final_transcription = ""  # Clear final transcription as this is partial
         self.partial_transcription = txt
-        self.message_queue.put_nowait({"type": "partial_user_request", "content": txt})
-        self.abort_text = txt # Update text used for abort check
-        self.abort_request_event.set() # Signal the abort worker
+        self.message_queue.put_nowait(
+            {"type": "partial_user_request", "content": txt})
+        self.abort_text = txt  # Update text used for abort check
+        self.abort_request_event.set()  # Signal the abort worker
 
     def safe_abort_running_syntheses(self, reason: str):
         """Placeholder for safely aborting syntheses (currently does nothing)."""
@@ -673,22 +716,26 @@ class TranscriptionCallbacks:
             audio: The raw audio bytes corresponding to the final transcription. (Currently unused)
             txt: The transcription text (might be slightly refined in on_final).
         """
-        logger.info(Colors.apply('🖥️🏁 =================== USER TURN END ===================').light_gray)
+        logger.info(Colors.apply(
+            '🖥️🏁 =================== USER TURN END ===================').light_gray)
         self.user_finished_turn = True
-        self.user_interrupted = False # Reset connection-specific flag (user finished, not interrupted)
+        # Reset connection-specific flag (user finished, not interrupted)
+        self.user_interrupted = False
         # Access global manager state
         if self.app.state.SpeechPipelineManager.is_valid_gen():
-            logger.info(f"{Colors.apply('🖥️🔊 TTS ALLOWED (before final)').blue}")
+            logger.info(
+                f"{Colors.apply('🖥️🔊 TTS ALLOWED (before final)').blue}")
             self.app.state.SpeechPipelineManager.running_generation.tts_quick_allowed_event.set()
 
         # first block further incoming audio (Audio processor's state)
         if not self.app.state.AudioInputProcessor.interrupted:
-            logger.info(f"{Colors.apply('🖥️🎙️ ⏸️ Microphone interrupted (end of turn)').cyan}")
+            logger.info(
+                f"{Colors.apply('🖥️🎙️ ⏸️ Microphone interrupted (end of turn)').cyan}")
             self.app.state.AudioInputProcessor.interrupted = True
-            self.interruption_time = time.time() # Set connection-specific flag
+            self.interruption_time = time.time()  # Set connection-specific flag
 
         logger.info(f"{Colors.apply('🖥️🔊 TTS STREAM RELEASED').blue}")
-        self.tts_to_client = True # Set connection-specific flag
+        self.tts_to_client = True  # Set connection-specific flag
 
         # Send final user request (using the reliable final_transcription OR current partial if final isn't set yet)
         user_request_content = self.final_transcription if self.final_transcription else self.partial_transcription
@@ -708,9 +755,11 @@ class TranscriptionCallbacks:
                     "content": self.assistant_answer
                 })
 
-        logger.info(f"🖥️🧠 Adding user request to history: '{user_request_content}'")
+        logger.info(
+            f"🖥️🧠 Adding user request to history: '{user_request_content}'")
         # Access global manager state
-        self.app.state.SpeechPipelineManager.history.append({"role": "user", "content": user_request_content})
+        self.app.state.SpeechPipelineManager.history.append(
+            {"role": "user", "content": user_request_content})
 
     def on_final(self, txt: str):
         """
@@ -721,9 +770,10 @@ class TranscriptionCallbacks:
         Args:
             txt: The final transcription text.
         """
-        logger.info(f"\n{Colors.apply('🖥️✅ FINAL USER REQUEST (STT Callback): ').green}{txt}")
-        if not self.final_transcription: # Store it if not already set by on_before_final logic
-             self.final_transcription = txt
+        logger.info(
+            f"\n{Colors.apply('🖥️✅ FINAL USER REQUEST (STT Callback): ').green}{txt}")
+        if not self.final_transcription:  # Store it if not already set by on_before_final logic
+            self.final_transcription = txt
 
     def abort_generations(self, reason: str):
         """
@@ -734,9 +784,11 @@ class TranscriptionCallbacks:
         Args:
             reason: A string describing why the abortion is triggered.
         """
-        logger.info(f"{Colors.apply('🖥️🛑 Aborting generation:').blue} {reason}")
+        logger.info(
+            f"{Colors.apply('🖥️🛑 Aborting generation:').blue} {reason}")
         # Access global manager state
-        self.app.state.SpeechPipelineManager.abort_generation(reason=f"server.py abort_generations: {reason}")
+        self.app.state.SpeechPipelineManager.abort_generation(
+            reason=f"server.py abort_generations: {reason}")
 
     def on_silence_active(self, silence_active: bool):
         """
@@ -760,7 +812,8 @@ class TranscriptionCallbacks:
         Args:
             txt: The partial assistant text.
         """
-        logger.info(f"{Colors.apply('🖥️💬 PARTIAL ASSISTANT ANSWER: ').green}{txt}")
+        logger.info(
+            f"{Colors.apply('🖥️💬 PARTIAL ASSISTANT ANSWER: ').green}{txt}")
         # Use connection-specific user_interrupted flag
         if not self.user_interrupted:
             self.assistant_answer = txt
@@ -779,32 +832,37 @@ class TranscriptionCallbacks:
         TTS streaming, sends stop/interruption messages to the client, aborts ongoing
         generation, sends any final assistant answer generated so far, and resets relevant state.
         """
-        logger.info(f"{Colors.ORANGE}🖥️🎙️ Recording started.{Colors.RESET} TTS Client Playing: {self.tts_client_playing}")
+        logger.info(
+            f"{Colors.ORANGE}🖥️🎙️ Recording started.{Colors.RESET} TTS Client Playing: {self.tts_client_playing}")
         # Use connection-specific tts_client_playing flag
         if self.tts_client_playing:
-            self.tts_to_client = False # Stop server sending TTS
-            self.user_interrupted = True # Mark connection as user interrupted
-            logger.info(f"{Colors.apply('🖥️❗ INTERRUPTING TTS due to recording start').blue}")
+            self.tts_to_client = False  # Stop server sending TTS
+            self.user_interrupted = True  # Mark connection as user interrupted
+            logger.info(
+                f"{Colors.apply('🖥️❗ INTERRUPTING TTS due to recording start').blue}")
 
             # Send final assistant answer *if* one was generated and not sent
-            logger.info(Colors.apply("🖥️✅ Sending final assistant answer (forced on interruption)").pink)
+            logger.info(Colors.apply(
+                "🖥️✅ Sending final assistant answer (forced on interruption)").pink)
             self.send_final_assistant_answer(forced=True)
 
             # Minimal reset for interruption:
-            self.tts_chunk_sent = False # Reset chunk sending flag
+            self.tts_chunk_sent = False  # Reset chunk sending flag
             # self.assistant_answer = "" # Optional: Clear partial answer if needed
 
             logger.info("🖥️🛑 Sending stop_tts to client.")
             self.message_queue.put_nowait({
-                "type": "stop_tts", # Client handles this to mute/ignore
+                "type": "stop_tts",  # Client handles this to mute/ignore
                 "content": ""
             })
 
-            logger.info(f"{Colors.apply('🖥️🛑 RECORDING START ABORTING GENERATION').red}")
-            self.abort_generations("on_recording_start, user interrupts, TTS Playing")
+            logger.info(
+                f"{Colors.apply('🖥️🛑 RECORDING START ABORTING GENERATION').red}")
+            self.abort_generations(
+                "on_recording_start, user interrupts, TTS Playing")
 
             logger.info("🖥️❗ Sending tts_interruption to client.")
-            self.message_queue.put_nowait({ # Tell client to stop playback and clear buffer
+            self.message_queue.put_nowait({  # Tell client to stop playback and clear buffer
                 "type": "tts_interruption",
                 "content": ""
             })
@@ -828,18 +886,22 @@ class TranscriptionCallbacks:
         final_answer = ""
         # Access global manager state
         if self.app.state.SpeechPipelineManager.is_valid_gen():
-            final_answer = self.app.state.SpeechPipelineManager.running_generation.quick_answer + self.app.state.SpeechPipelineManager.running_generation.final_answer
+            final_answer = self.app.state.SpeechPipelineManager.running_generation.quick_answer + \
+                self.app.state.SpeechPipelineManager.running_generation.final_answer
 
-        if not final_answer: # Check if constructed answer is empty
+        if not final_answer:  # Check if constructed answer is empty
             # If forced, try using the last known partial answer from this connection
             if forced and self.assistant_answer:
-                 final_answer = self.assistant_answer
-                 logger.warning(f"🖥️⚠️ Using partial answer as final (forced): '{final_answer}'")
+                final_answer = self.assistant_answer
+                logger.warning(
+                    f"🖥️⚠️ Using partial answer as final (forced): '{final_answer}'")
             else:
-                logger.warning(f"🖥️⚠️ Final assistant answer was empty, not sending.")
-                return# Nothing to send
+                logger.warning(
+                    f"🖥️⚠️ Final assistant answer was empty, not sending.")
+                return  # Nothing to send
 
-        logger.debug(f"🖥️✅ Attempting to send final answer: '{final_answer}' (Sent previously: {self.final_assistant_answer_sent})")
+        logger.debug(
+            f"🖥️✅ Attempting to send final answer: '{final_answer}' (Sent previously: {self.final_assistant_answer_sent})")
 
         if not self.final_assistant_answer_sent and final_answer:
             import re
@@ -849,22 +911,26 @@ class TranscriptionCallbacks:
             cleaned_answer = cleaned_answer.replace('\\n', ' ')
             cleaned_answer = re.sub(r'\s+', ' ', cleaned_answer).strip()
 
-            if cleaned_answer: # Ensure it's not empty after cleaning
-                logger.info(f"\n{Colors.apply('🖥️✅ FINAL ASSISTANT ANSWER (Sending): ').green}{cleaned_answer}")
+            if cleaned_answer:  # Ensure it's not empty after cleaning
+                logger.info(
+                    f"\n{Colors.apply('🖥️✅ FINAL ASSISTANT ANSWER (Sending): ').green}{cleaned_answer}")
                 self.message_queue.put_nowait({
                     "type": "final_assistant_answer",
                     "content": cleaned_answer
                 })
-                app.state.SpeechPipelineManager.history.append({"role": "assistant", "content": cleaned_answer})
+                app.state.SpeechPipelineManager.history.append(
+                    {"role": "assistant", "content": cleaned_answer})
                 self.final_assistant_answer_sent = True
-                self.final_assistant_answer = cleaned_answer # Store the sent answer
+                self.final_assistant_answer = cleaned_answer  # Store the sent answer
             else:
-                logger.warning(f"🖥️⚠️ {Colors.YELLOW}Final assistant answer was empty after cleaning.{Colors.RESET}")
-                self.final_assistant_answer_sent = False # Don't mark as sent
-                self.final_assistant_answer = "" # Clear the stored answer
-        elif forced and not final_answer: # Should not happen due to earlier check, but safety
-             logger.warning(f"🖥️⚠️ {Colors.YELLOW}Forced send of final assistant answer, but it was empty.{Colors.RESET}")
-             self.final_assistant_answer = "" # Clear the stored answer
+                logger.warning(
+                    f"🖥️⚠️ {Colors.YELLOW}Final assistant answer was empty after cleaning.{Colors.RESET}")
+                self.final_assistant_answer_sent = False  # Don't mark as sent
+                self.final_assistant_answer = ""  # Clear the stored answer
+        elif forced and not final_answer:  # Should not happen due to earlier check, but safety
+            logger.warning(
+                f"🖥️⚠️ {Colors.YELLOW}Forced send of final assistant answer, but it was empty.{Colors.RESET}")
+            self.final_assistant_answer = ""  # Clear the stored answer
 
 
 # --------------------------------------------------------------------
@@ -910,10 +976,13 @@ async def websocket_endpoint(ws: WebSocket):
     # Create tasks for handling different responsibilities
     # Pass the 'callbacks' instance to tasks that need connection-specific state
     tasks = [
-        asyncio.create_task(process_incoming_data(ws, app, audio_chunks, callbacks)), # Pass callbacks
-        asyncio.create_task(app.state.AudioInputProcessor.process_chunk_queue(audio_chunks)),
+        asyncio.create_task(process_incoming_data(
+            ws, app, audio_chunks, callbacks)),  # Pass callbacks
+        asyncio.create_task(
+            app.state.AudioInputProcessor.process_chunk_queue(audio_chunks)),
         asyncio.create_task(send_text_messages(ws, message_queue)),
-        asyncio.create_task(send_tts_chunks(app, message_queue, callbacks)), # Pass callbacks
+        asyncio.create_task(send_tts_chunks(
+            app, message_queue, callbacks)),  # Pass callbacks
     ]
 
     try:
@@ -925,7 +994,8 @@ async def websocket_endpoint(ws: WebSocket):
         # Await cancelled tasks to let them clean up if needed
         await asyncio.gather(*pending, return_exceptions=True)
     except Exception as e:
-        logger.error(f"🖥️💥 {Colors.apply('ERROR').red} in WebSocket session: {repr(e)}")
+        logger.error(
+            f"🖥️💥 {Colors.apply('ERROR').red} in WebSocket session: {repr(e)}")
     finally:
         logger.info("🖥️🧹 Cleaning up WebSocket tasks...")
         for task in tasks:
@@ -952,16 +1022,20 @@ if __name__ == "__main__":
         cert_file = "127.0.0.1+1.pem"
         key_file = "127.0.0.1+1-key.pem"
         if not os.path.exists(cert_file) or not os.path.exists(key_file):
-             logger.error(f"🖥️💥 SSL cert file ({cert_file}) or key file ({key_file}) not found.")
-             logger.error("🖥️💥 Please generate them using mkcert:")
-             logger.error("🖥️💥   choco install mkcert") # Assuming Windows based on earlier check, adjust if needed
-             logger.error("🖥️💥   mkcert -install")
-             logger.error("🖥️💥   mkcert 127.0.0.1 YOUR_LOCAL_IP") # Remind user to replace with actual IP if needed
-             logger.error("🖥️💥 Exiting.")
-             sys.exit(1)
+            logger.error(
+                f"🖥️💥 SSL cert file ({cert_file}) or key file ({key_file}) not found.")
+            logger.error("🖥️💥 Please generate them using mkcert:")
+            # Assuming Windows based on earlier check, adjust if needed
+            logger.error("🖥️💥   choco install mkcert")
+            logger.error("🖥️💥   mkcert -install")
+            # Remind user to replace with actual IP if needed
+            logger.error("🖥️💥   mkcert 127.0.0.1 YOUR_LOCAL_IP")
+            logger.error("🖥️💥 Exiting.")
+            sys.exit(1)
 
         # Run the server with SSL
-        logger.info(f"🖥️▶️ Starting server with SSL (cert: {cert_file}, key: {key_file}).")
+        logger.info(
+            f"🖥️▶️ Starting server with SSL (cert: {cert_file}, key: {key_file}).")
         uvicorn.run(
             "server:app",
             host="0.0.0.0",

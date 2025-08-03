@@ -20,8 +20,9 @@ echo Upgrading pip...
 python -m pip install --upgrade pip
 
 echo Installing torch...
-pip install torch==2.5.1+cu121 torchaudio==2.5.1+cu121 torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 pip install https://raw.githubusercontent.com/KoljaB/RealtimeVoiceChat/main/wheels/deepspeed-0.16.1%%2Bunknown-cp310-cp310-win_amd64.whl
+pip install triton-windows==3.3.1.post19
 
 echo Installing requirements...
 pip install -r requirements.txt

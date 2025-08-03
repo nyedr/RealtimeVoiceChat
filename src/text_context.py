@@ -1,8 +1,9 @@
+from .colors import Colors  # Assuming this is needed externally
 import logging
-from typing import Optional, Set, Tuple, Dict, Union # Added for type hinting
+from typing import Optional, Set, Tuple, Dict, Union  # Added for type hinting
 
 logger = logging.getLogger(__name__)
-from colors import Colors # Assuming this is needed externally
+
 
 class TextContext:
     """
@@ -12,6 +13,7 @@ class TextContext:
     adhere to specified length constraints, and contain a minimum number
     of alphanumeric characters.
     """
+
     def __init__(self, split_tokens: Optional[Set[str]] = None) -> None:
         """
         Initializes the TextContext processor.
@@ -25,7 +27,8 @@ class TextContext:
         """
         if split_tokens is None:
             # Using a more explicit variable name internally for clarity
-            default_splits: Set[str] = {".", "!", "?", ",", ";", ":", "\n", "-", "。", "、"}
+            default_splits: Set[str] = {
+                ".", "!", "?", ",", ";", ":", "\n", "-", "。", "、"}
             self.split_tokens: Set[str] = default_splits
         else:
             self.split_tokens: Set[str] = set(split_tokens)
@@ -66,7 +69,8 @@ class TextContext:
                 if i >= min_len and alnum_count >= min_alnum_count:
                     context_str = txt[:i]
                     remaining_str = txt[i:]
-                    logger.info(f"🧠 {Colors.MAGENTA}Context found after char no: {i}, context: {context_str}")
+                    logger.info(
+                        f"🧠 {Colors.MAGENTA}Context found after char no: {i}, context: {context_str}")
                     return context_str, remaining_str
 
         # No suitable context found within the max_len limit

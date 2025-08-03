@@ -18,13 +18,13 @@ services:
       - HF_HOME=/home/appuser/.cache/huggingface
       - TORCH_HOME=/home/appuser/.cache/torch
     volumes:
-       # Optional: Mount code for live development
-       # - ./code:/app/code
-       # Mount cache directories
-       - huggingface_cache:/home/appuser/.cache/huggingface
-       - torch_cache:/home/appuser/.cache/torch
+      # Optional: Mount code for live development
+      # - ./src:/app/src
+      # Mount cache directories
+      - huggingface_cache:/home/appuser/.cache/huggingface
+      - torch_cache:/home/appuser/.cache/torch
     depends_on:
-    - ollama
+      - ollama
     deploy: # GPU access for the app
       resources:
         reservations:
@@ -57,12 +57,12 @@ services:
               count: all
               capabilities: [gpu, compute, utility]
     # healthcheck:
-      # Check if the Ollama API is responsive
-      # test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "--timeout=10", "http://localhost:11434/api/tags"]
-      # interval: 15s
-      # timeout: 10s
-      # retries: 12
-      # start_period: 45s # Give it time to start
+    # Check if the Ollama API is responsive
+    # test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "--timeout=10", "http://localhost:11434/api/tags"]
+    # interval: 15s
+    # timeout: 10s
+    # retries: 12
+    # start_period: 45s # Give it time to start
     restart: unless-stopped
 
 # Define named volumes for persistent data

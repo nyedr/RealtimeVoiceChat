@@ -1,4 +1,5 @@
 # speech_pipeline_manager.py
+import os
 from typing import Optional, Callable
 import threading
 import logging
@@ -7,22 +8,26 @@ from queue import Queue, Empty
 import sys
 
 # (Make sure real/mock imports are correct)
-from audio_module import AudioProcessor
-from text_similarity import TextSimilarity
-from text_context import TextContext
-from llm_module import LLM
-from colors import Colors
+from .audio_module import AudioProcessor
+from .text_similarity import TextSimilarity
+from .text_context import TextContext
+from .llm_module import LLM
+from .colors import Colors
 
 # (Logging setup)
 logger = logging.getLogger(__name__)
 
 # (Load system prompt)
 try:
-    with open("system_prompt.txt", "r", encoding="utf-8") as f:
+    # Try to load from the src directory where this file is located
+    system_prompt_path = os.path.join(
+        os.path.dirname(__file__), "system_prompt.txt")
+    with open(system_prompt_path, "r", encoding="utf-8") as f:
         system_prompt = f.read().strip()
     logger.info("🗣️📄 System prompt loaded from file.")
 except FileNotFoundError:
-    logger.warning("🗣️📄 system_prompt.txt not found. Using default system prompt.")
+    logger.warning(
+        "🗣️📄 system_prompt.txt not found. Using default system prompt.")
     system_prompt = "You are a helpful assistant."
 
 
@@ -51,6 +56,7 @@ class PipelineRequest:
     Holds information about the action to perform (e.g., 'prepare', 'abort'),
     associated data (e.g., text input), and a timestamp for potential de-duplication.
     """
+
     def __init__(self, action: str, data: Optional[any] = None):
         """
         Initializes a PipelineRequest instance.
@@ -63,6 +69,7 @@ class PipelineRequest:
         self.data = data
         self.timestamp = time.time()
 
+
 class RunningGeneration:
     """
     Holds the state and resources for a single, ongoing text-to-speech generation process.
@@ -71,6 +78,7 @@ class RunningGeneration:
     the status of LLM and TTS stages (quick and final), threading events for synchronization,
     queues for audio chunks, and text buffers for partial/complete answers.
     """
+
     def __init__(self, id: int):
         """
         Initializes a RunningGeneration state object.
@@ -78,7 +86,7 @@ class RunningGeneration:
         Args:
             id: A unique identifier for this generation attempt.
         """
-        self.id: int = id # Store the generation ID
+        self.id: int = id  # Store the generation ID
         self.text: Optional[str] = None
         self.timestamp = time.time()
 
@@ -90,7 +98,8 @@ class RunningGeneration:
         self.quick_answer: str = ""
         self.quick_answer_provided: bool = False
         self.quick_answer_first_chunk_ready: bool = False
-        self.quick_answer_overhang: str = "" # This is the part of the text that was not used in the context
+        # This is the part of the text that was not used in the context
+        self.quick_answer_overhang: str = ""
         self.tts_quick_started: bool = False
 
         self.tts_quick_allowed_event = threading.Event()
@@ -119,14 +128,15 @@ class SpeechPipelineManager:
     facilitates aborting ongoing generations, manages conversation history,
     and coordinates worker threads using queues and events.
     """
+
     def __init__(
-            self,
-            tts_engine: str = "kokoro",
-            llm_provider: str = "ollama",
-            llm_model: str = "hf.co/bartowski/huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated-GGUF:Q4_K_M",
-            no_think: bool = False,
-            orpheus_model: str = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf",
-        ):
+        self,
+        tts_engine: str = "kokoro",
+        llm_provider: str = "ollama",
+        llm_model: str = "hf.co/bartowski/huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated-GGUF:Q4_K_M",
+        no_think: bool = False,
+        orpheus_model: str = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf",
+    ):
         """
         Initializes the SpeechPipelineManager.
 
@@ -162,14 +172,15 @@ class SpeechPipelineManager:
         self.generation_counter: int = 0
         self.abort_lock = threading.Lock()
         self.llm = LLM(
-            backend=self.llm_provider, # Or your backend
+            backend=self.llm_provider,  # Or your backend
             model=self.llm_model,
             system_prompt=self.system_prompt,
             no_think=no_think,
         )
         self.llm.prewarm()
         self.llm_inference_time = self.llm.measure_inference_time()
-        logger.debug(f"🗣️🧠🕒 LLM inference time: {self.llm_inference_time:.2f}ms")
+        logger.debug(
+            f"🗣️🧠🕒 LLM inference time: {self.llm_inference_time:.2f}ms")
 
         # --- State ---
         self.history = []
@@ -199,10 +210,14 @@ class SpeechPipelineManager:
         self.previous_request = None
 
         # --- Worker Threads ---
-        self.request_processing_thread = threading.Thread(target=self._request_processing_worker, name="RequestProcessingThread", daemon=True)
-        self.llm_inference_thread = threading.Thread(target=self._llm_inference_worker, name="LLMProcessingThread", daemon=True)
-        self.tts_quick_inference_thread = threading.Thread(target=self._tts_quick_inference_worker, name="TTSQuickProcessingThread", daemon=True)
-        self.tts_final_inference_thread = threading.Thread(target=self._tts_final_inference_worker, name="TTSFinalProcessingThread", daemon=True)
+        self.request_processing_thread = threading.Thread(
+            target=self._request_processing_worker, name="RequestProcessingThread", daemon=True)
+        self.llm_inference_thread = threading.Thread(
+            target=self._llm_inference_worker, name="LLMProcessingThread", daemon=True)
+        self.tts_quick_inference_thread = threading.Thread(
+            target=self._tts_quick_inference_worker, name="TTSQuickProcessingThread", daemon=True)
+        self.tts_final_inference_thread = threading.Thread(
+            target=self._tts_final_inference_worker, name="TTSFinalProcessingThread", daemon=True)
 
         self.request_processing_thread.start()
         self.llm_inference_thread.start()
@@ -211,10 +226,13 @@ class SpeechPipelineManager:
 
         self.on_partial_assistant_text: Optional[Callable[[str], None]] = None
 
-        self.full_output_pipeline_latency = self.llm_inference_time + self.audio.tts_inference_time
-        logger.info(f"🗣️⏱️ Full output pipeline latency: {self.full_output_pipeline_latency:.2f}ms (LLM: {self.llm_inference_time:.2f}ms, TTS: {self.audio.tts_inference_time:.2f}ms)")
+        self.full_output_pipeline_latency = self.llm_inference_time + \
+            self.audio.tts_inference_time
+        logger.info(
+            f"🗣️⏱️ Full output pipeline latency: {self.full_output_pipeline_latency:.2f}ms (LLM: {self.llm_inference_time:.2f}ms, TTS: {self.audio.tts_inference_time:.2f}ms)")
 
-        logger.info("🗣️🚀 SpeechPipelineManager initialized and workers started.")
+        logger.info(
+            "🗣️🚀 SpeechPipelineManager initialized and workers started.")
 
     def is_valid_gen(self) -> bool:
         """
@@ -246,27 +264,33 @@ class SpeechPipelineManager:
                     # Simple timestamp-based deduplication for identical consecutive requests
                     if self.previous_request.data == request.data and isinstance(request.data, str):
                         if request.timestamp - self.previous_request.timestamp < 2:
-                            logger.info(f"🗣️🗑️ Request Processor: Skipping duplicate request - {request.action}")
+                            logger.info(
+                                f"🗣️🗑️ Request Processor: Skipping duplicate request - {request.action}")
                             continue
 
                 # Drain the queue to get the most recent request
                 while not self.requests_queue.empty():
-                    skipped_request = self.requests_queue.get(False)  # Non-blocking get
-                    logger.debug(f"🗣️🗑️ Request Processor: Skipping older request - {skipped_request.action}")
-                    request = skipped_request # Keep the last one we retrieved
-                
-                self.abort_block_event.wait() # Wait if an abort is in progress
-                logger.debug(f"🗣️🔄 Request Processor: Processing most recent request - {request.action}")
-                
+                    skipped_request = self.requests_queue.get(
+                        False)  # Non-blocking get
+                    logger.debug(
+                        f"🗣️🗑️ Request Processor: Skipping older request - {skipped_request.action}")
+                    request = skipped_request  # Keep the last one we retrieved
+
+                self.abort_block_event.wait()  # Wait if an abort is in progress
+                logger.debug(
+                    f"🗣️🔄 Request Processor: Processing most recent request - {request.action}")
+
                 if request.action == "prepare":
                     self.process_prepare_generation(request.data)
                     self.previous_request = request
                 elif request.action == "finish":
-                     # Note: 'finish' action currently has no specific handling logic here.
-                     logger.info(f"🗣️🤷 Request Processor: Received 'finish' action (currently no-op).")
-                     self.previous_request = request # Still update previous_request
+                    # Note: 'finish' action currently has no specific handling logic here.
+                    logger.info(
+                        f"🗣️🤷 Request Processor: Received 'finish' action (currently no-op).")
+                    self.previous_request = request  # Still update previous_request
                 else:
-                    logger.warning(f"🗣️❓ Request Processor: Unknown action '{request.action}'")
+                    logger.warning(
+                        f"🗣️❓ Request Processor: Unknown action '{request.action}'")
 
             except Empty:
                 continue
@@ -281,7 +305,8 @@ class SpeechPipelineManager:
         Sets the `quick_answer_first_chunk_ready` flag on the current `running_generation`
         if one exists. This flag might be used for fine-grained timing or state checks.
         """
-        logger.info("🗣️🎶 First audio chunk synthesized. Setting TTS quick allowed event.")
+        logger.info(
+            "🗣️🎶 First audio chunk synthesized. Setting TTS quick allowed event.")
         if self.running_generation:
             self.running_generation.quick_answer_first_chunk_ready = True
 
@@ -316,15 +341,15 @@ class SpeechPipelineManager:
         patterns_to_remove = ["<think>", "</think>", "\n", " "]
         previous_text = None
         current_text = text
-        
+
         while previous_text != current_text:
             previous_text = current_text
-            
+
             # Remove all patterns from the beginning of the string
             for pattern in patterns_to_remove:
                 while current_text.startswith(pattern):
                     current_text = current_text[len(pattern):]
-        
+
         return current_text
 
     def _llm_inference_worker(self):
@@ -341,30 +366,33 @@ class SpeechPipelineManager:
         """
         logger.info("🗣️🧠 LLM Worker: Starting...")
         while not self.shutdown_event.is_set():
-            
+
             ready = self.generator_ready_event.wait(timeout=1.0)
             if not ready:
                 continue
 
             # Check if aborted *while waiting* before clearing the ready event
             if self.stop_llm_request_event.is_set():
-                logger.info("🗣️🧠❌ LLM Worker: Abort detected while waiting for generator_ready_event.")
+                logger.info(
+                    "🗣️🧠❌ LLM Worker: Abort detected while waiting for generator_ready_event.")
                 self.stop_llm_request_event.clear()
                 self.stop_llm_finished_event.set()
                 self.llm_generation_active = False
-                continue # Go back to waiting
+                continue  # Go back to waiting
 
             self.generator_ready_event.clear()
-            self.stop_everything_event.clear() # Assuming a new generation clears global stop
+            self.stop_everything_event.clear()  # Assuming a new generation clears global stop
             current_gen = self.running_generation
 
             if not current_gen or not current_gen.llm_generator:
-                logger.warning("🗣️🧠❓ LLM Worker: No valid generation or generator found after event.")
+                logger.warning(
+                    "🗣️🧠❓ LLM Worker: No valid generation or generator found after event.")
                 self.llm_generation_active = False
-                continue # Go back to waiting
+                continue  # Go back to waiting
 
             gen_id = current_gen.id
-            logger.info(f"🗣️🧠🔄 [Gen {gen_id}] LLM Worker: Processing generation...")
+            logger.info(
+                f"🗣️🧠🔄 [Gen {gen_id}] LLM Worker: Processing generation...")
 
             # Set state for active generation
             self.llm_generation_active = True
@@ -376,65 +404,77 @@ class SpeechPipelineManager:
                 for chunk in current_gen.llm_generator:
                     # Check for stop *before* processing the chunk
                     if self.stop_llm_request_event.is_set():
-                        logger.info(f"🗣️🧠❌ [Gen {gen_id}] LLM Worker: Stop request detected during iteration.")
+                        logger.info(
+                            f"🗣️🧠❌ [Gen {gen_id}] LLM Worker: Stop request detected during iteration.")
                         self.stop_llm_request_event.clear()
                         current_gen.llm_aborted = True
-                        break # Exit the generator loop
+                        break  # Exit the generator loop
 
                     chunk = self.preprocess_chunk(chunk)
                     token_count += 1
                     current_gen.quick_answer += chunk
                     if self.no_think:
-                        current_gen.quick_answer = self.clean_quick_answer(current_gen.quick_answer)
+                        current_gen.quick_answer = self.clean_quick_answer(
+                            current_gen.quick_answer)
 
                     if token_count == 1:
-                        logger.info(f"🗣️🧠⏱️ [Gen {gen_id}] LLM Worker: TTFT: {(time.time() - start_time):.4f}s")
+                        logger.info(
+                            f"🗣️🧠⏱️ [Gen {gen_id}] LLM Worker: TTFT: {(time.time() - start_time):.4f}s")
 
                     # Check for quick answer boundary only if not already provided
                     if not current_gen.quick_answer_provided:
-                        context, overhang = self.text_context.get_context(current_gen.quick_answer)
+                        context, overhang = self.text_context.get_context(
+                            current_gen.quick_answer)
                         if context:
-                            logger.info(f"🗣️🧠✔️ [Gen {gen_id}] LLM Worker:  {Colors.apply('QUICK ANSWER FOUND:').magenta} {context}, overhang: {overhang}")
+                            logger.info(
+                                f"🗣️🧠✔️ [Gen {gen_id}] LLM Worker:  {Colors.apply('QUICK ANSWER FOUND:').magenta} {context}, overhang: {overhang}")
                             current_gen.quick_answer = context
                             if self.on_partial_assistant_text:
-                                self.on_partial_assistant_text(current_gen.quick_answer)
+                                self.on_partial_assistant_text(
+                                    current_gen.quick_answer)
                             current_gen.quick_answer_overhang = overhang
                             current_gen.quick_answer_provided = True
-                            self.llm_answer_ready_event.set() # Signal TTS quick worker
+                            self.llm_answer_ready_event.set()  # Signal TTS quick worker
                             break
                             # Do NOT break here, continue iterating to finish the full LLM response
 
-
                 # Loop finished naturally or broke due to stop request
-                logger.info(f"🗣️🧠🏁 [Gen {gen_id}] LLM Worker: Generator loop finished%s" % (" (Aborted)" if current_gen.llm_aborted else ""))
+                logger.info(f"🗣️🧠🏁 [Gen {gen_id}] LLM Worker: Generator loop finished%s" % (
+                    " (Aborted)" if current_gen.llm_aborted else ""))
 
                 # If loop finished naturally and no quick answer was ever found (e.g., short response)
                 # Set the whole thing as the quick answer.
                 if not current_gen.llm_aborted and not current_gen.quick_answer_provided:
-                    logger.info(f"🗣️🧠✔️ [Gen {gen_id}] LLM Worker: No context boundary found, using full response as quick answer.")
+                    logger.info(
+                        f"🗣️🧠✔️ [Gen {gen_id}] LLM Worker: No context boundary found, using full response as quick answer.")
                     # quick_answer already contains the full text
-                    current_gen.quick_answer_provided = True # Mark as provided
+                    current_gen.quick_answer_provided = True  # Mark as provided
                     if self.on_partial_assistant_text:
-                        self.on_partial_assistant_text(current_gen.quick_answer)
-                    self.llm_answer_ready_event.set() # Signal TTS quick worker
+                        self.on_partial_assistant_text(
+                            current_gen.quick_answer)
+                    self.llm_answer_ready_event.set()  # Signal TTS quick worker
 
             except Exception as e:
-                logger.exception(f"🗣️🧠💥 [Gen {gen_id}] LLM Worker: Error during generation: {e}")
-                current_gen.llm_aborted = True # Mark as aborted on error
+                logger.exception(
+                    f"🗣️🧠💥 [Gen {gen_id}] LLM Worker: Error during generation: {e}")
+                current_gen.llm_aborted = True  # Mark as aborted on error
             finally:
                 # Clean up state regardless of how the loop/try block exited
                 self.llm_generation_active = False
-                self.stop_llm_finished_event.set() # Signal that this worker's processing attempt is done
+                # Signal that this worker's processing attempt is done
+                self.stop_llm_finished_event.set()
 
                 if current_gen.llm_aborted:
                     # If LLM was aborted, ensure TTS (both quick and final) is also stopped
-                    logger.info(f"🗣️🧠❌ [Gen {gen_id}] LLM Aborted, requesting TTS quick/final stop.")
+                    logger.info(
+                        f"🗣️🧠❌ [Gen {gen_id}] LLM Aborted, requesting TTS quick/final stop.")
                     self.stop_tts_quick_request_event.set()
                     self.stop_tts_final_request_event.set()
                     # Wake up TTS quick worker if it's waiting
                     self.llm_answer_ready_event.set()
 
-                logger.info(f"🗣️🧠🏁 [Gen {gen_id}] LLM Worker: Finished processing cycle.")
+                logger.info(
+                    f"🗣️🧠🏁 [Gen {gen_id}] LLM Worker: Finished processing cycle.")
 
                 current_gen.llm_finished = True
                 current_gen.llm_finished_event.set()
@@ -468,68 +508,85 @@ class SpeechPipelineManager:
         with self.check_abort_lock:
             if self.running_generation:
                 current_gen_id_str = f"Gen {self.running_generation.id}"
-                logger.info(f"🗣️🛑❓ {current_gen_id_str} Abort check requested (reason: {abort_reason})")
+                logger.info(
+                    f"🗣️🛑❓ {current_gen_id_str} Abort check requested (reason: {abort_reason})")
 
                 if self.running_generation.abortion_started:
-                    logger.info(f"🗣️🛑⏳ {current_gen_id_str} Active generation is already aborting, waiting to finish (if requested).")
+                    logger.info(
+                        f"🗣️🛑⏳ {current_gen_id_str} Active generation is already aborting, waiting to finish (if requested).")
 
                     # Only wait if wait_for_finish is True
                     if wait_for_finish:
                         start_time = time.time()
                         # Wait using the abort_completed_event for better synchronization
-                        completed = self.abort_completed_event.wait(timeout=5.0) # Use the event from abort_generation
+                        completed = self.abort_completed_event.wait(
+                            timeout=5.0)  # Use the event from abort_generation
 
                         if not completed:
-                             logger.error(f"🗣️🛑💥💥 {current_gen_id_str} Timeout waiting for ongoing abortion to complete. State inconsistency possible!")
-                             # Force clear it just in case, though this indicates a deeper issue.
-                             self.running_generation = None
+                            logger.error(
+                                f"🗣️🛑💥💥 {current_gen_id_str} Timeout waiting for ongoing abortion to complete. State inconsistency possible!")
+                            # Force clear it just in case, though this indicates a deeper issue.
+                            self.running_generation = None
                         elif self.running_generation is not None:
-                            logger.error(f"🗣️🛑💥💥 {current_gen_id_str} Abortion completed event set, but running_generation still exists. State inconsistency likely!")
+                            logger.error(
+                                f"🗣️🛑💥💥 {current_gen_id_str} Abortion completed event set, but running_generation still exists. State inconsistency likely!")
                             # Force clear it.
                             self.running_generation = None
                         else:
-                            logger.info(f"🗣️🛑✅ {current_gen_id_str} Ongoing abortion finished.")
+                            logger.info(
+                                f"🗣️🛑✅ {current_gen_id_str} Ongoing abortion finished.")
                     else:
-                        logger.info(f"🗣️🛑🏃 {current_gen_id_str} Not waiting for ongoing abortion as wait_for_finish=False")
+                        logger.info(
+                            f"🗣️🛑🏃 {current_gen_id_str} Not waiting for ongoing abortion as wait_for_finish=False")
 
-                    return True # An abort was processed (waited for)
+                    return True  # An abort was processed (waited for)
                 else:
                     # No abortion in progress, check similarity
-                    logger.info(f"🗣️🛑🤔 {current_gen_id_str} Found active generation, checking text similarity.")
+                    logger.info(
+                        f"🗣️🛑🤔 {current_gen_id_str} Found active generation, checking text similarity.")
                     try:
-                         # Ensure running_generation.text is not None before comparison
+                        # Ensure running_generation.text is not None before comparison
                         if self.running_generation.text is None:
-                            logger.warning(f"🗣️🛑❓ {current_gen_id_str} Running generation text is None, cannot compare similarity. Assuming different.")
+                            logger.warning(
+                                f"🗣️🛑❓ {current_gen_id_str} Running generation text is None, cannot compare similarity. Assuming different.")
                             similarity = 0.0
                         else:
-                            similarity = self.text_similarity.calculate_similarity(self.running_generation.text, txt)
+                            similarity = self.text_similarity.calculate_similarity(
+                                self.running_generation.text, txt)
                     except Exception as e:
-                        logger.warning(f"🗣️🛑💥 {current_gen_id_str} Error calculating similarity: {e}. Assuming different.")
-                        similarity = 0.0 # Assume different on error
+                        logger.warning(
+                            f"🗣️🛑💥 {current_gen_id_str} Error calculating similarity: {e}. Assuming different.")
+                        similarity = 0.0  # Assume different on error
 
                     if similarity >= 0.95:
-                        logger.info(f"🗣️🛑🙅 {current_gen_id_str} Text ('{txt[:30]}...') too similar ({similarity:.2f}) to current '{self.running_generation.text[:30] if self.running_generation.text else 'None'}...'. Ignoring.")
-                        return False # No abort needed
+                        logger.info(
+                            f"🗣️🛑🙅 {current_gen_id_str} Text ('{txt[:30]}...') too similar ({similarity:.2f}) to current '{self.running_generation.text[:30] if self.running_generation.text else 'None'}...'. Ignoring.")
+                        return False  # No abort needed
 
                     # Texts are different enough, initiate abort
-                    logger.info(f"🗣️🛑🚀 {current_gen_id_str} Text ('{txt[:30]}...') different enough ({similarity:.2f}) from '{self.running_generation.text[:30] if self.running_generation.text else 'None'}...'. Requesting synchronous abort.")
+                    logger.info(
+                        f"🗣️🛑🚀 {current_gen_id_str} Text ('{txt[:30]}...') different enough ({similarity:.2f}) from '{self.running_generation.text[:30] if self.running_generation.text else 'None'}...'. Requesting synchronous abort.")
                     start_time = time.time()
                     # Call the synchronous public abort method - THIS IS KEY
-                    self.abort_generation(wait_for_completion=wait_for_finish, timeout=7.0, reason=f"check_abort found different text ({abort_reason})")
+                    self.abort_generation(wait_for_completion=wait_for_finish, timeout=7.0,
+                                          reason=f"check_abort found different text ({abort_reason})")
 
                     if wait_for_finish:
-                         # Check state *after* waiting for the abort call
+                        # Check state *after* waiting for the abort call
                         if self.running_generation is not None:
-                            logger.error(f"🗣️🛑💥💥 {current_gen_id_str} !!! Abort call completed but running_generation is still not None. State inconsistency likely!")
+                            logger.error(
+                                f"🗣️🛑💥💥 {current_gen_id_str} !!! Abort call completed but running_generation is still not None. State inconsistency likely!")
                             # Force clear it.
                             self.running_generation = None
                         else:
-                            logger.info(f"🗣️🛑✅ {current_gen_id_str} Synchronous abort completed in {time.time() - start_time:.2f}s.")
+                            logger.info(
+                                f"🗣️🛑✅ {current_gen_id_str} Synchronous abort completed in {time.time() - start_time:.2f}s.")
 
-                    return True # An abort was processed (initiated)
+                    return True  # An abort was processed (initiated)
             else:
-                logger.info("🗣️🛑🤷 No active generation found during abort check.")
-                return False # No active generation to abort
+                logger.info(
+                    "🗣️🛑🤷 No active generation found during abort check.")
+                return False  # No active generation to abort
 
     def _tts_quick_inference_worker(self):
         """
@@ -551,32 +608,37 @@ class SpeechPipelineManager:
 
             # Check if aborted *while waiting* before clearing the ready event
             if self.stop_tts_quick_request_event.is_set():
-                logger.info("🗣️👄❌ Quick TTS Worker: Abort detected while waiting for llm_answer_ready_event.")
+                logger.info(
+                    "🗣️👄❌ Quick TTS Worker: Abort detected while waiting for llm_answer_ready_event.")
                 self.stop_tts_quick_request_event.clear()
                 self.stop_tts_quick_finished_event.set()
                 self.tts_quick_generation_active = False
-                continue # Go back to waiting
+                continue  # Go back to waiting
 
-            self.llm_answer_ready_event.clear() # Clear the event now that we're processing
+            self.llm_answer_ready_event.clear()  # Clear the event now that we're processing
             current_gen = self.running_generation
 
             if not current_gen or not current_gen.quick_answer:
-                logger.warning("🗣️👄❓ Quick TTS Worker: No valid generation or quick answer found after event.")
+                logger.warning(
+                    "🗣️👄❓ Quick TTS Worker: No valid generation or quick answer found after event.")
                 self.tts_quick_generation_active = False
-                continue # Go back to waiting
+                continue  # Go back to waiting
 
             # Double-check if this generation was aborted *just* before we got here
             if current_gen.audio_quick_aborted or current_gen.abortion_started:
-                logger.info(f"🗣️👄❌ [Gen {current_gen.id}] Quick TTS Worker: Generation already marked as aborted. Skipping.")
+                logger.info(
+                    f"🗣️👄❌ [Gen {current_gen.id}] Quick TTS Worker: Generation already marked as aborted. Skipping.")
                 continue
 
             gen_id = current_gen.id
-            logger.info(f"🗣️👄🔄 [Gen {gen_id}] Quick TTS Worker: Processing TTS for quick answer...")
+            logger.info(
+                f"🗣️👄🔄 [Gen {gen_id}] Quick TTS Worker: Processing TTS for quick answer...")
 
             # Set state for active generation
             self.tts_quick_generation_active = True
             self.stop_tts_quick_finished_event.clear()
-            current_gen.tts_quick_finished_event.clear() # Reset TTS finish marker for this attempt
+            # Reset TTS finish marker for this attempt
+            current_gen.tts_quick_finished_event.clear()
             current_gen.tts_quick_started = True
 
             # --- tts_quick_allowed_event Wait Logic ---
@@ -585,60 +647,70 @@ class SpeechPipelineManager:
             # to be used, something needs to .set() it externally.
             allowed_to_speak = False
             start_wait_time = time.time()
-            wait_timeout = 5.0 # Example timeout
-            logger.debug(f"🗣️👄⏳ [Gen {gen_id}] Quick TTS Worker: Waiting for tts_quick_allowed_event (timeout: {wait_timeout}s)...")
+            wait_timeout = 5.0  # Example timeout
+            logger.debug(
+                f"🗣️👄⏳ [Gen {gen_id}] Quick TTS Worker: Waiting for tts_quick_allowed_event (timeout: {wait_timeout}s)...")
             # TODO: Determine if this event is actually used/needed. If not, remove the wait.
             # If it IS needed, ensure something sets it. Currently, it might always timeout.
             # For now, we'll proceed even if it times out, assuming it's optional or not yet implemented.
             # allowed_to_speak = current_gen.tts_quick_allowed_event.wait(timeout=wait_timeout)
-            allowed_to_speak = True # Temporarily bypass wait for testing/if event is unused.
+            # Temporarily bypass wait for testing/if event is unused.
+            allowed_to_speak = True
             # if not allowed_to_speak:
             #    logger.warning(f"🗣️👄⏱️ [Gen {gen_id}] Quick TTS Worker: Timed out waiting for tts_quick_allowed_event after {time.time() - start_wait_time:.2f}s. Proceeding anyway.")
             # else:
             #    logger.debug(f"🗣️👄✔️ [Gen {gen_id}] Quick TTS Worker: tts_quick_allowed_event received or bypassed.")
             # --- End tts_quick_allowed_event Wait Logic ---
 
-
             try:
                 # Check again for aborts right before synthesis call
                 if self.stop_tts_quick_request_event.is_set() or current_gen.abortion_started:
-                     logger.info(f"🗣️👄❌ [Gen {gen_id}] Quick TTS Worker: Aborting TTS synthesis due to stop request or abortion flag.")
-                     current_gen.audio_quick_aborted = True
+                    logger.info(
+                        f"🗣️👄❌ [Gen {gen_id}] Quick TTS Worker: Aborting TTS synthesis due to stop request or abortion flag.")
+                    current_gen.audio_quick_aborted = True
                 else:
-                    logger.info(f"🗣️👄🎶 [Gen {gen_id}] Quick TTS Worker: Synthesizing: '{current_gen.quick_answer[:50]}...'")
+                    logger.info(
+                        f"🗣️👄🎶 [Gen {gen_id}] Quick TTS Worker: Synthesizing: '{current_gen.quick_answer[:50]}...'")
                     completed = self.audio.synthesize(
                         current_gen.quick_answer,
                         current_gen.audio_chunks,
-                        self.stop_tts_quick_request_event # Pass the event for the synthesizer to check
+                        self.stop_tts_quick_request_event  # Pass the event for the synthesizer to check
                     )
 
                     if not completed:
                         # Synthesis was stopped by the stop_tts_quick_request_event
-                        logger.info(f"🗣️👄❌ [Gen {gen_id}] Quick TTS Worker: Synthesis stopped via event.")
+                        logger.info(
+                            f"🗣️👄❌ [Gen {gen_id}] Quick TTS Worker: Synthesis stopped via event.")
                         current_gen.audio_quick_aborted = True
                     else:
-                        logger.info(f"🗣️👄✅ [Gen {gen_id}] Quick TTS Worker: Synthesis completed successfully.")
-
+                        logger.info(
+                            f"🗣️👄✅ [Gen {gen_id}] Quick TTS Worker: Synthesis completed successfully.")
 
             except Exception as e:
-                logger.exception(f"🗣️👄💥 [Gen {gen_id}] Quick TTS Worker: Error during synthesis: {e}")
-                current_gen.audio_quick_aborted = True # Mark as aborted on error
+                logger.exception(
+                    f"🗣️👄💥 [Gen {gen_id}] Quick TTS Worker: Error during synthesis: {e}")
+                current_gen.audio_quick_aborted = True  # Mark as aborted on error
             finally:
                 # Clean up state regardless of how the try block exited
                 self.tts_quick_generation_active = False
-                self.stop_tts_quick_finished_event.set() # Signal that this worker's processing attempt is done
-                logger.info(f"🗣️👄🏁 [Gen {gen_id}] Quick TTS Worker: Finished processing cycle.")
+                # Signal that this worker's processing attempt is done
+                self.stop_tts_quick_finished_event.set()
+                logger.info(
+                    f"🗣️👄🏁 [Gen {gen_id}] Quick TTS Worker: Finished processing cycle.")
 
                 # Check if synthesis completed naturally or was stopped/aborted
                 if current_gen.audio_quick_aborted or self.stop_tts_quick_request_event.is_set():
-                    logger.info(f"🗣️👄❌ [Gen {gen_id}] Quick TTS Marked as Aborted/Incomplete.")
-                    self.stop_tts_quick_request_event.clear() # Clear the request if it was set
-                    current_gen.audio_quick_aborted = True # Ensure flag is set
+                    logger.info(
+                        f"🗣️👄❌ [Gen {gen_id}] Quick TTS Marked as Aborted/Incomplete.")
+                    self.stop_tts_quick_request_event.clear()  # Clear the request if it was set
+                    current_gen.audio_quick_aborted = True  # Ensure flag is set
                 else:
-                    logger.info(f"🗣️👄✅ [Gen {gen_id}] Quick TTS Finished Successfully.")
-                    current_gen.tts_quick_finished_event.set() # Signal natural completion
+                    logger.info(
+                        f"🗣️👄✅ [Gen {gen_id}] Quick TTS Finished Successfully.")
+                    current_gen.tts_quick_finished_event.set()  # Signal natural completion
 
-                current_gen.audio_quick_finished = True # Mark quick audio phase as done (even if aborted)
+                # Mark quick audio phase as done (even if aborted)
+                current_gen.audio_quick_finished = True
 
     def _tts_final_inference_worker(self):
         """
@@ -660,113 +732,137 @@ class SpeechPipelineManager:
         logger.info("🗣️👄🚀 Final TTS Worker: Starting...")
         while not self.shutdown_event.is_set():
             current_gen = self.running_generation
-            time.sleep(0.01) # Prevent tight spinning when idle
+            time.sleep(0.01)  # Prevent tight spinning when idle
 
             # --- Wait for prerequisites ---
-            if not current_gen: continue # No active generation
-            if current_gen.tts_final_started: continue # Final TTS already running for this gen
-            if not current_gen.tts_quick_started: continue # Quick TTS hasn't even started
-            if not current_gen.audio_quick_finished: continue # Quick TTS hasn't finished (successfully or aborted)
+            if not current_gen:
+                continue  # No active generation
+            if current_gen.tts_final_started:
+                continue  # Final TTS already running for this gen
+            if not current_gen.tts_quick_started:
+                continue  # Quick TTS hasn't even started
+            if not current_gen.audio_quick_finished:
+                continue  # Quick TTS hasn't finished (successfully or aborted)
 
-            gen_id = current_gen.id # Get ID once prerequisites seem met
+            gen_id = current_gen.id  # Get ID once prerequisites seem met
 
             # --- Check conditions to *start* final TTS ---
             if current_gen.audio_quick_aborted:
-                #logger.debug(f"🗣️👄🙅 [Gen {gen_id}] Final TTS Worker: Quick TTS was aborted, skipping final TTS.")
+                # logger.debug(f"🗣️👄🙅 [Gen {gen_id}] Final TTS Worker: Quick TTS was aborted, skipping final TTS.")
                 continue
             if not current_gen.quick_answer_provided:
-                 logger.debug(f"🗣️👄🙅 [Gen {gen_id}] Final TTS Worker: Quick answer boundary was not found, skipping final TTS (quick TTS handled everything).")
-                 continue
+                logger.debug(
+                    f"🗣️👄🙅 [Gen {gen_id}] Final TTS Worker: Quick answer boundary was not found, skipping final TTS (quick TTS handled everything).")
+                continue
             if current_gen.abortion_started:
-                 logger.debug(f"🗣️👄🙅 [Gen {gen_id}] Final TTS Worker: Generation is aborting, skipping final TTS.")
-                 continue
+                logger.debug(
+                    f"🗣️👄🙅 [Gen {gen_id}] Final TTS Worker: Generation is aborting, skipping final TTS.")
+                continue
 
             # --- Conditions met, start final TTS ---
-            logger.info(f"🗣️👄🔄 [Gen {gen_id}] Final TTS Worker: Processing final TTS...")
+            logger.info(
+                f"🗣️👄🔄 [Gen {gen_id}] Final TTS Worker: Processing final TTS...")
 
             def get_generator():
                 """Yields remaining text chunks for final TTS synthesis."""
                 # Yield overhang first
                 if current_gen.quick_answer_overhang:
-                    preprocessed_overhang = self.preprocess_chunk(current_gen.quick_answer_overhang)
-                    logger.debug(f"🗣️👄< [Gen {gen_id}] Final TTS Gen: Yielding overhang: '{preprocessed_overhang[:50]}...'")
-                    current_gen.final_answer += preprocessed_overhang # Add preprocessed version
+                    preprocessed_overhang = self.preprocess_chunk(
+                        current_gen.quick_answer_overhang)
+                    logger.debug(
+                        f"🗣️👄< [Gen {gen_id}] Final TTS Gen: Yielding overhang: '{preprocessed_overhang[:50]}...'")
+                    current_gen.final_answer += preprocessed_overhang  # Add preprocessed version
                     if self.on_partial_assistant_text:
-                         logger.debug(f"🗣️👄< [Gen {gen_id}] Final TTS Worker on_partial_assistant_text: Sending overhang.")
-                         try:
-                            self.on_partial_assistant_text(current_gen.quick_answer + current_gen.final_answer)
-                         except Exception as cb_e:
-                             logger.warning(f"🗣️💥 Callback error in on_partial_assistant_text (overhang): {cb_e}")
+                        logger.debug(
+                            f"🗣️👄< [Gen {gen_id}] Final TTS Worker on_partial_assistant_text: Sending overhang.")
+                        try:
+                            self.on_partial_assistant_text(
+                                current_gen.quick_answer + current_gen.final_answer)
+                        except Exception as cb_e:
+                            logger.warning(
+                                f"🗣️💥 Callback error in on_partial_assistant_text (overhang): {cb_e}")
                     yield preprocessed_overhang
 
                 # Yield remaining chunks from LLM generator
-                logger.debug(f"🗣️👄< [Gen {gen_id}] Final TTS Gen: Yielding remaining LLM chunks...")
+                logger.debug(
+                    f"🗣️👄< [Gen {gen_id}] Final TTS Gen: Yielding remaining LLM chunks...")
                 try:
                     for chunk in current_gen.llm_generator:
-                         # Check for stop *before* processing chunk
-                         if self.stop_tts_final_request_event.is_set():
-                             logger.info(f"🗣️👄❌ [Gen {gen_id}] Final TTS Gen: Stop request detected during LLM iteration.")
-                             current_gen.audio_final_aborted = True
-                             break # Stop yielding
+                        # Check for stop *before* processing chunk
+                        if self.stop_tts_final_request_event.is_set():
+                            logger.info(
+                                f"🗣️👄❌ [Gen {gen_id}] Final TTS Gen: Stop request detected during LLM iteration.")
+                            current_gen.audio_final_aborted = True
+                            break  # Stop yielding
 
-                         preprocessed_chunk = self.preprocess_chunk(chunk)
-                         current_gen.final_answer += preprocessed_chunk
-                         if self.on_partial_assistant_text:
-                             # logger.debug(f"🗣️👄< [Gen {gen_id}] Final TTS Worker on_partial_assistant_text: Sending final chunk: {preprocessed_chunk[:30]}")
+                        preprocessed_chunk = self.preprocess_chunk(chunk)
+                        current_gen.final_answer += preprocessed_chunk
+                        if self.on_partial_assistant_text:
+                            # logger.debug(f"🗣️👄< [Gen {gen_id}] Final TTS Worker on_partial_assistant_text: Sending final chunk: {preprocessed_chunk[:30]}")
                             try:
-                                 self.on_partial_assistant_text(current_gen.quick_answer + current_gen.final_answer)
+                                self.on_partial_assistant_text(
+                                    current_gen.quick_answer + current_gen.final_answer)
                             except Exception as cb_e:
-                                 logger.warning(f"🗣️💥 Callback error in on_partial_assistant_text (final chunk): {cb_e}")
+                                logger.warning(
+                                    f"🗣️💥 Callback error in on_partial_assistant_text (final chunk): {cb_e}")
 
-                         yield preprocessed_chunk
-                    logger.debug(f"🗣️👄< [Gen {gen_id}] Final TTS Gen: Finished iterating LLM chunks.")
+                        yield preprocessed_chunk
+                    logger.debug(
+                        f"🗣️👄< [Gen {gen_id}] Final TTS Gen: Finished iterating LLM chunks.")
                 except Exception as gen_e:
-                     logger.exception(f"🗣️👄💥 [Gen {gen_id}] Final TTS Gen: Error iterating LLM generator: {gen_e}")
-                     current_gen.audio_final_aborted = True # Mark as aborted on error
+                    logger.exception(
+                        f"🗣️👄💥 [Gen {gen_id}] Final TTS Gen: Error iterating LLM generator: {gen_e}")
+                    current_gen.audio_final_aborted = True  # Mark as aborted on error
 
             # Set state for active generation
             self.tts_final_generation_active = True
             self.stop_tts_final_finished_event.clear()
             current_gen.tts_final_started = True
-            current_gen.tts_final_finished_event.clear() # Reset TTS finish marker
+            current_gen.tts_final_finished_event.clear()  # Reset TTS finish marker
 
             try:
-                logger.info(f"🗣️👄🎶 [Gen {gen_id}] Final TTS Worker: Synthesizing remaining text...")
+                logger.info(
+                    f"🗣️👄🎶 [Gen {gen_id}] Final TTS Worker: Synthesizing remaining text...")
                 completed = self.audio.synthesize_generator(
                     get_generator(),
                     current_gen.audio_chunks,
-                    self.stop_tts_final_request_event # Pass the event for the synthesizer to check
+                    self.stop_tts_final_request_event  # Pass the event for the synthesizer to check
                 )
 
                 if not completed:
-                     logger.info(f"🗣️👄❌ [Gen {gen_id}] Final TTS Worker: Synthesis stopped via event.")
-                     current_gen.audio_final_aborted = True
+                    logger.info(
+                        f"🗣️👄❌ [Gen {gen_id}] Final TTS Worker: Synthesis stopped via event.")
+                    current_gen.audio_final_aborted = True
                 else:
-                    logger.info(f"🗣️👄✅ [Gen {gen_id}] Final TTS Worker: Synthesis completed successfully.")
-
+                    logger.info(
+                        f"🗣️👄✅ [Gen {gen_id}] Final TTS Worker: Synthesis completed successfully.")
 
             except Exception as e:
-                logger.exception(f"🗣️👄💥 [Gen {gen_id}] Final TTS Worker: Error during synthesis: {e}")
-                current_gen.audio_final_aborted = True # Mark as aborted on error
+                logger.exception(
+                    f"🗣️👄💥 [Gen {gen_id}] Final TTS Worker: Error during synthesis: {e}")
+                current_gen.audio_final_aborted = True  # Mark as aborted on error
             finally:
                 # Clean up state regardless of how the try block exited
                 self.tts_final_generation_active = False
-                self.stop_tts_final_finished_event.set() # Signal that this worker's processing attempt is done
+                # Signal that this worker's processing attempt is done
+                self.stop_tts_final_finished_event.set()
                 # logger.info(f"🗣️👄🏁 [Gen {gen_id}] Final TTS Worker: Finished processing cycle. Final answer accumulated: '{current_gen.final_answer[:50]}...'")
-                logger.info(f"🗣️👄🏁 [Gen {gen_id}] Final TTS Worker: Finished processing cycle.")
-
+                logger.info(
+                    f"🗣️👄🏁 [Gen {gen_id}] Final TTS Worker: Finished processing cycle.")
 
                 # Check if synthesis completed naturally or was stopped
                 if current_gen.audio_final_aborted or self.stop_tts_final_request_event.is_set():
-                    logger.info(f"🗣️👄❌ [Gen {gen_id}] Final TTS Marked as Aborted/Incomplete.")
-                    self.stop_tts_final_request_event.clear() # Clear the request if it was set
-                    current_gen.audio_final_aborted = True # Ensure flag is set
+                    logger.info(
+                        f"🗣️👄❌ [Gen {gen_id}] Final TTS Marked as Aborted/Incomplete.")
+                    self.stop_tts_final_request_event.clear()  # Clear the request if it was set
+                    current_gen.audio_final_aborted = True  # Ensure flag is set
                 else:
-                    logger.info(f"🗣️👄✅ [Gen {gen_id}] Final TTS Finished Successfully.")
-                    current_gen.tts_final_finished_event.set() # Signal natural completion
+                    logger.info(
+                        f"🗣️👄✅ [Gen {gen_id}] Final TTS Finished Successfully.")
+                    current_gen.tts_final_finished_event.set()  # Signal natural completion
 
-                current_gen.audio_final_finished = True # Mark final audio phase as done (even if aborted)
-
+                # Mark final audio phase as done (even if aborted)
+                current_gen.audio_final_finished = True
 
     # --- Processing Methods ---
 
@@ -788,13 +884,15 @@ class SpeechPipelineManager:
             txt: The user input text for the new generation.
         """
         # --- Abort existing generation if necessary ---
-        id_in_spec = self.generation_counter + 1 # Prospective ID for logging
-        aborted = self.check_abort(txt, wait_for_finish=True, abort_reason=f"process_prepare_generation for new id {id_in_spec}")
+        id_in_spec = self.generation_counter + 1  # Prospective ID for logging
+        aborted = self.check_abort(
+            txt, wait_for_finish=True, abort_reason=f"process_prepare_generation for new id {id_in_spec}")
 
         # --- State is now guaranteed to be clean (running_generation is None) ---
         self.generation_counter += 1
         new_gen_id = self.generation_counter
-        logger.info(f"🗣️✨🔄 [Gen {new_gen_id}] Preparing new generation for: '{txt[:50]}...'")
+        logger.info(
+            f"🗣️✨🔄 [Gen {new_gen_id}] Preparing new generation for: '{txt[:50]}...'")
 
         # Reset flags and events (mostly redundant after sync abort, but safe)
         self.llm_generation_active = False
@@ -809,7 +907,8 @@ class SpeechPipelineManager:
         self.stop_tts_final_request_event.clear()
         self.stop_tts_final_finished_event.clear()
         self.abort_completed_event.clear()
-        self.abort_block_event.set() # Ensure block is released if check_abort didn't run/clear it
+        # Ensure block is released if check_abort didn't run/clear it
+        self.abort_block_event.set()
 
         # --- Create new generation object ---
         self.running_generation = RunningGeneration(id=new_gen_id)
@@ -821,15 +920,16 @@ class SpeechPipelineManager:
             # self.history.append({"role": "user", "content": txt}) # Example history update
             self.running_generation.llm_generator = self.llm.generate(
                 text=txt,
-                history=self.history, # Pass current history
+                history=self.history,  # Pass current history
                 use_system_prompt=True,
             )
-            logger.info(f"🗣️🧠✔️ [Gen {new_gen_id}] LLM generator created. Setting generator ready event.")
-            self.generator_ready_event.set() # Signal LLM worker
+            logger.info(
+                f"🗣️🧠✔️ [Gen {new_gen_id}] LLM generator created. Setting generator ready event.")
+            self.generator_ready_event.set()  # Signal LLM worker
         except Exception as e:
-            logger.exception(f"🗣️🧠💥 [Gen {new_gen_id}] Failed to create LLM generator: {e}")
-            self.running_generation = None # Clean up if generator creation failed
-
+            logger.exception(
+                f"🗣️🧠💥 [Gen {new_gen_id}] Failed to create LLM generator: {e}")
+            self.running_generation = None  # Clean up if generator creation failed
 
     def process_abort_generation(self):
         """
@@ -853,27 +953,29 @@ class SpeechPipelineManager:
         """
         # This method assumes it's called within the public abort_generation or internally
         with self.abort_lock:
-            current_gen_obj = self.running_generation # Store ref before potential clear
+            current_gen_obj = self.running_generation  # Store ref before potential clear
             current_gen_id_str = f"Gen {current_gen_obj.id}" if current_gen_obj else "Gen None"
 
             if current_gen_obj is None or current_gen_obj.abortion_started:
                 if current_gen_obj is None:
-                    logger.info(f"🗣️🛑🤷 {current_gen_id_str} No active generation found to abort.")
+                    logger.info(
+                        f"🗣️🛑🤷 {current_gen_id_str} No active generation found to abort.")
                 else:
-                    logger.info(f"🗣️🛑⏳ {current_gen_id_str} Abortion already in progress.")
+                    logger.info(
+                        f"🗣️🛑⏳ {current_gen_id_str} Abortion already in progress.")
                 # Ensure events are managed correctly even if called redundantly
-                self.abort_completed_event.set() # Signal completion if nothing to do/already done
-                self.abort_block_event.set() # Ensure block is released
+                self.abort_completed_event.set()  # Signal completion if nothing to do/already done
+                self.abort_block_event.set()  # Ensure block is released
                 return
 
             # --- Start Abort Process ---
-            logger.info(f"🗣️🛑🚀 {current_gen_id_str} Abortion process starting...")
-            current_gen_obj.abortion_started = True # Mark immediately
-            self.abort_block_event.clear() # Block new requests *before* waiting
-            self.abort_completed_event.clear() # Clear completion flag at start
-            self.stop_everything_event.set() # General signal (might be unused by workers)
+            logger.info(
+                f"🗣️🛑🚀 {current_gen_id_str} Abortion process starting...")
+            current_gen_obj.abortion_started = True  # Mark immediately
+            self.abort_block_event.clear()  # Block new requests *before* waiting
+            self.abort_completed_event.clear()  # Clear completion flag at start
+            self.stop_everything_event.set()  # General signal (might be unused by workers)
             aborted_something = False
-
 
             # --- Abort LLM ---
             # Check if LLM is potentially active (running OR waiting to start)
@@ -882,94 +984,117 @@ class SpeechPipelineManager:
             if is_llm_potentially_active:
                 logger.info(f"🗣️🛑🧠❌ {current_gen_id_str} - Stopping LLM...")
                 self.stop_llm_request_event.set()
-                self.generator_ready_event.set() # Wake up LLM worker if it's waiting
-                stopped = self.stop_llm_finished_event.wait(timeout=5.0) # Wait for LLM worker
+                self.generator_ready_event.set()  # Wake up LLM worker if it's waiting
+                stopped = self.stop_llm_finished_event.wait(
+                    timeout=5.0)  # Wait for LLM worker
                 if stopped:
-                    logger.info(f"🗣️🛑🧠👍 {current_gen_id_str} LLM stopped confirmation received.")
-                    self.stop_llm_finished_event.clear() # Reset for next time
+                    logger.info(
+                        f"🗣️🛑🧠👍 {current_gen_id_str} LLM stopped confirmation received.")
+                    self.stop_llm_finished_event.clear()  # Reset for next time
                 else:
-                    logger.warning(f"🗣️🛑🧠⏱️ {current_gen_id_str} Timeout waiting for LLM stop confirmation.")
+                    logger.warning(
+                        f"🗣️🛑🧠⏱️ {current_gen_id_str} Timeout waiting for LLM stop confirmation.")
                 # Attempt external cancellation if available
                 if hasattr(self.llm, 'cancel_generation'):
-                    logger.info(f"🗣️🛑🧠🔌 {current_gen_id_str} Calling external LLM cancel_generation.")
+                    logger.info(
+                        f"🗣️🛑🧠🔌 {current_gen_id_str} Calling external LLM cancel_generation.")
                     try:
                         self.llm.cancel_generation()
                     except Exception as cancel_e:
-                         logger.warning(f"🗣️🛑🧠💥 {current_gen_id_str} Error during external LLM cancel: {cancel_e}")
-                self.llm_generation_active = False # Ensure flag is off
+                        logger.warning(
+                            f"🗣️🛑🧠💥 {current_gen_id_str} Error during external LLM cancel: {cancel_e}")
+                self.llm_generation_active = False  # Ensure flag is off
                 aborted_something = True
             else:
-                logger.info(f"🗣️🛑🧠📴 {current_gen_id_str} LLM appears inactive, no stop needed.")
-            self.stop_llm_request_event.clear() # Ensure stop request is clear
+                logger.info(
+                    f"🗣️🛑🧠📴 {current_gen_id_str} LLM appears inactive, no stop needed.")
+            self.stop_llm_request_event.clear()  # Ensure stop request is clear
 
             # --- Abort Quick TTS ---
             # Check if TTS Quick is potentially active (running OR waiting to start)
             is_tts_quick_potentially_active = self.tts_quick_generation_active or self.llm_answer_ready_event.is_set()
             if is_tts_quick_potentially_active:
-                logger.info(f"🗣️🛑👄❌ {current_gen_id_str} Stopping Quick TTS...")
+                logger.info(
+                    f"🗣️🛑👄❌ {current_gen_id_str} Stopping Quick TTS...")
                 self.stop_tts_quick_request_event.set()
-                self.llm_answer_ready_event.set() # Wake up TTS worker if it's waiting
-                stopped = self.stop_tts_quick_finished_event.wait(timeout=5.0) # Wait for TTS worker
+                self.llm_answer_ready_event.set()  # Wake up TTS worker if it's waiting
+                stopped = self.stop_tts_quick_finished_event.wait(
+                    timeout=5.0)  # Wait for TTS worker
                 if stopped:
-                    logger.info(f"🗣️🛑👄👍 {current_gen_id_str} Quick TTS stopped confirmation received.")
-                    self.stop_tts_quick_finished_event.clear() # Reset
+                    logger.info(
+                        f"🗣️🛑👄👍 {current_gen_id_str} Quick TTS stopped confirmation received.")
+                    self.stop_tts_quick_finished_event.clear()  # Reset
                 else:
-                    logger.warning(f"🗣️🛑👄⏱️ {current_gen_id_str} Timeout waiting for Quick TTS stop confirmation.")
-                self.tts_quick_generation_active = False # Ensure flag is off
+                    logger.warning(
+                        f"🗣️🛑👄⏱️ {current_gen_id_str} Timeout waiting for Quick TTS stop confirmation.")
+                self.tts_quick_generation_active = False  # Ensure flag is off
                 aborted_something = True
             else:
-                logger.info(f"🗣️🛑👄📴 {current_gen_id_str} Quick TTS appears inactive, no stop needed.")
-            self.stop_tts_quick_request_event.clear() # Ensure stop request is clear
+                logger.info(
+                    f"🗣️🛑👄📴 {current_gen_id_str} Quick TTS appears inactive, no stop needed.")
+            self.stop_tts_quick_request_event.clear()  # Ensure stop request is clear
 
             # --- Abort Final TTS ---
             # Check if TTS Final is potentially active (just running, doesn't wait on an event like others)
             is_tts_final_potentially_active = self.tts_final_generation_active
             if is_tts_final_potentially_active:
-                logger.info(f"🗣️🛑👄❌ {current_gen_id_str} Stopping Final TTS...")
+                logger.info(
+                    f"🗣️🛑👄❌ {current_gen_id_str} Stopping Final TTS...")
                 self.stop_tts_final_request_event.set()
                 # No event to .set() here to wake it up, it polls state
-                stopped = self.stop_tts_final_finished_event.wait(timeout=5.0) # Wait for TTS worker
+                stopped = self.stop_tts_final_finished_event.wait(
+                    timeout=5.0)  # Wait for TTS worker
                 if stopped:
-                    logger.info(f"🗣️🛑👄👍 {current_gen_id_str} Final TTS stopped confirmation received.")
-                    self.stop_tts_final_finished_event.clear() # Reset
+                    logger.info(
+                        f"🗣️🛑👄👍 {current_gen_id_str} Final TTS stopped confirmation received.")
+                    self.stop_tts_final_finished_event.clear()  # Reset
                 else:
-                    logger.warning(f"🗣️🛑👄⏱️ {current_gen_id_str} Timeout waiting for Final TTS stop confirmation.")
-                self.tts_final_generation_active = False # Ensure flag is off
+                    logger.warning(
+                        f"🗣️🛑👄⏱️ {current_gen_id_str} Timeout waiting for Final TTS stop confirmation.")
+                self.tts_final_generation_active = False  # Ensure flag is off
                 aborted_something = True
             else:
-                logger.info(f"🗣️🛑👄📴 {current_gen_id_str} Final TTS appears inactive, no stop needed.")
-            self.stop_tts_final_request_event.clear() # Ensure stop request is clear
+                logger.info(
+                    f"🗣️🛑👄📴 {current_gen_id_str} Final TTS appears inactive, no stop needed.")
+            self.stop_tts_final_request_event.clear()  # Ensure stop request is clear
 
             # --- Stop Audio Playback (if AudioProcessor handles it) ---
             # Assuming AudioProcessor might have playback control that needs stopping
             if hasattr(self.audio, 'stop_playback'):
-                logger.info(f"🗣️🛑🔊 {current_gen_id_str} Requesting audio playback stop.")
+                logger.info(
+                    f"🗣️🛑🔊 {current_gen_id_str} Requesting audio playback stop.")
                 try:
-                    self.audio.stop_playback() # Or similar method
+                    self.audio.stop_playback()  # Or similar method
                 except Exception as audio_e:
-                    logger.warning(f"🗣️🛑🔊💥 {current_gen_id_str} Error stopping audio playback: {audio_e}")
-
+                    logger.warning(
+                        f"🗣️🛑🔊💥 {current_gen_id_str} Error stopping audio playback: {audio_e}")
 
             # --- Clear the running generation object and close generator ---
             # Re-check self.running_generation in case it changed *during* the waits above
             # Use the initially captured current_gen_obj for closing the generator if needed
             if self.running_generation is not None and self.running_generation.id == current_gen_obj.id:
-                logger.info(f"🗣️🛑🧹 {current_gen_id_str} Clearing running generation object.")
+                logger.info(
+                    f"🗣️🛑🧹 {current_gen_id_str} Clearing running generation object.")
                 if current_gen_obj.llm_generator and hasattr(current_gen_obj.llm_generator, 'close'):
                     try:
-                        logger.info(f"🗣️🛑🧠🔌 {current_gen_id_str} Closing LLM generator stream.")
+                        logger.info(
+                            f"🗣️🛑🧠🔌 {current_gen_id_str} Closing LLM generator stream.")
                         current_gen_obj.llm_generator.close()
                     except Exception as e:
-                        logger.warning(f"🗣️🛑🧠💥 {current_gen_id_str} Error closing LLM generator: {e}")
-                self.running_generation = None # Clear the reference
+                        logger.warning(
+                            f"🗣️🛑🧠💥 {current_gen_id_str} Error closing LLM generator: {e}")
+                self.running_generation = None  # Clear the reference
             elif self.running_generation is not None and self.running_generation.id != current_gen_obj.id:
-                 logger.warning(f"🗣️🛑❓ {current_gen_id_str} Mismatch: self.running_generation changed during abort (now Gen {self.running_generation.id}). Clearing current ref.")
-                 self.running_generation = None # Clear the unexpected new one too? Or just log? Clearing seems safer.
+                logger.warning(
+                    f"🗣️🛑❓ {current_gen_id_str} Mismatch: self.running_generation changed during abort (now Gen {self.running_generation.id}). Clearing current ref.")
+                # Clear the unexpected new one too? Or just log? Clearing seems safer.
+                self.running_generation = None
             elif aborted_something:
-                logger.info(f"🗣️🛑🤷 {current_gen_id_str} Worker(s) aborted but running_generation was already None.")
+                logger.info(
+                    f"🗣️🛑🤷 {current_gen_id_str} Worker(s) aborted but running_generation was already None.")
             else:
-                logger.info(f"🗣️🛑🤷 {current_gen_id_str} Nothing seemed active to abort, running_generation is None.")
-
+                logger.info(
+                    f"🗣️🛑🤷 {current_gen_id_str} Nothing seemed active to abort, running_generation is None.")
 
             # --- Final Cleanup of Trigger Events ---
             # Ensure workers don't accidentally pick up stale signals if they restart quickly
@@ -977,9 +1102,10 @@ class SpeechPipelineManager:
             self.llm_answer_ready_event.clear()
 
             # --- Signal Completion ---
-            logger.info(f"🗣️🛑✅ {current_gen_id_str} Abort processing complete. Setting completion event and releasing block.")
-            self.abort_completed_event.set() # Signal that the abort process is fully done
-            self.abort_block_event.set() # Release the block for the request processor
+            logger.info(
+                f"🗣️🛑✅ {current_gen_id_str} Abort processing complete. Setting completion event and releasing block.")
+            self.abort_completed_event.set()  # Signal that the abort process is fully done
+            self.abort_block_event.set()  # Release the block for the request processor
 
     # --- Public Methods ---
 
@@ -1027,22 +1153,24 @@ class SpeechPipelineManager:
             return
 
         gen_id_str = f"Gen {self.running_generation.id}" if self.running_generation else "Gen None"
-        logger.info(f"🗣️🛑🚀 Requesting 'abort' (wait={wait_for_completion}, reason='{reason}') for {gen_id_str}")
+        logger.info(
+            f"🗣️🛑🚀 Requesting 'abort' (wait={wait_for_completion}, reason='{reason}') for {gen_id_str}")
 
         # Call the internal synchronous processor
         self.process_abort_generation()
 
         # Optionally wait for completion
         if wait_for_completion:
-            logger.info(f"🗣️🛑⏳ Waiting for abort completion (timeout={timeout}s)...")
+            logger.info(
+                f"🗣️🛑⏳ Waiting for abort completion (timeout={timeout}s)...")
             completed = self.abort_completed_event.wait(timeout=timeout)
             if completed:
                 logger.info(f"🗣️🛑✅ Abort completion confirmed.")
             else:
-                logger.warning(f"🗣️🛑⏱️ Timeout waiting for abort completion event.")
+                logger.warning(
+                    f"🗣️🛑⏱️ Timeout waiting for abort completion event.")
             # Ensure block is released after waiting, even on timeout
             self.abort_block_event.set()
-
 
     def reset(self):
         """
@@ -1052,7 +1180,8 @@ class SpeechPipelineManager:
         clears the conversation history.
         """
         logger.info("🗣️🔄 Resetting pipeline state...")
-        self.abort_generation(wait_for_completion=True, timeout=7.0, reason="reset") # Ensure clean slate
+        self.abort_generation(wait_for_completion=True,
+                              timeout=7.0, reason="reset")  # Ensure clean slate
         self.history = []
         logger.info("🗣️🧹 History cleared. Reset complete.")
 
@@ -1070,7 +1199,8 @@ class SpeechPipelineManager:
 
         # Try a final synchronous abort to ensure clean state before join
         logger.info("🗣️🔌🛑 Attempting final abort before joining threads...")
-        self.abort_generation(wait_for_completion=True, timeout=3.0, reason="shutdown")
+        self.abort_generation(wait_for_completion=True,
+                              timeout=3.0, reason="shutdown")
 
         # Wake up threads that might be waiting on events so they can check shutdown_event
         logger.info("🗣️🔌🔔 Signaling events to wake up any waiting threads...")
@@ -1081,7 +1211,7 @@ class SpeechPipelineManager:
         self.stop_tts_quick_finished_event.set()
         self.stop_tts_final_finished_event.set()
         self.abort_completed_event.set()
-        self.abort_block_event.set() # Ensure request processor isn't blocked
+        self.abort_block_event.set()  # Ensure request processor isn't blocked
 
         # Join threads
         threads_to_join = [
@@ -1092,13 +1222,13 @@ class SpeechPipelineManager:
         ]
 
         for thread, name in threads_to_join:
-             if thread.is_alive():
-                 logger.info(f"🗣️🔌⏳ Joining {name}...")
-                 thread.join(timeout=5.0)
-                 if thread.is_alive():
-                     logger.warning(f"🗣️🔌⏱️ {name} thread did not join cleanly.")
-             else:
-                  logger.info(f"🗣️🔌👍 {name} thread already finished.")
-
+            if thread.is_alive():
+                logger.info(f"🗣️🔌⏳ Joining {name}...")
+                thread.join(timeout=5.0)
+                if thread.is_alive():
+                    logger.warning(
+                        f"🗣️🔌⏱️ {name} thread did not join cleanly.")
+            else:
+                logger.info(f"🗣️🔌👍 {name} thread already finished.")
 
         logger.info("🗣️🔌✅ Shutdown complete.")

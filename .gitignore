@@ -1,0 +1,10 @@
+/tests
+
+/venv
+
+.github
+
+todos.md
+
+src/__pycache__/
+
