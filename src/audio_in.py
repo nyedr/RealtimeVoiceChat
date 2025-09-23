@@ -38,16 +38,18 @@ class AudioInputProcessor:
             pipeline_latency: Estimated latency of the processing pipeline in seconds.
         """
         self.last_partial_text: Optional[str] = None
-        self.transcriber = TranscriptionProcessor(
-            language,
-            on_recording_start_callback=self._on_recording_start,
-            silence_active_callback=self._silence_active_callback,
-            is_orpheus=is_orpheus,
-            pipeline_latency=pipeline_latency,
-        )
+        self.language = language
+        self.is_orpheus = is_orpheus
+        self.pipeline_latency = pipeline_latency
+
+        # Initialize transcriber as None - will be created when speech is enabled
+        self.transcriber: Optional[TranscriptionProcessor] = None
         # Flag to indicate if the transcription loop has failed fatally
         self._transcription_failed = False
-        self.transcription_task = asyncio.create_task(
+        # Flag to indicate if speech recognition is enabled
+        self.speech_enabled = False
+        # Start the transcription task (it will wait for speech to be enabled)
+        self.transcription_task: Optional[asyncio.Task] = asyncio.create_task(
             self._run_transcription_loop())
 
         self.realtime_callback: Optional[Callable[[str], None]] = None
@@ -55,6 +57,9 @@ class AudioInputProcessor:
             None], None]] = None  # Type adjusted
         self.silence_active_callback: Optional[Callable[[
             bool], None]] = silence_active_callback
+
+        # Store pending callbacks for when transcriber is created
+        self._pending_callbacks = None
         # TODO: Consider renaming or clarifying usage (interrupted by user speech?)
         self.interrupted = False
 
@@ -74,7 +79,8 @@ class AudioInputProcessor:
     def abort_generation(self) -> None:
         """Signals the underlying transcriber to abort any ongoing generation process."""
         logger.info("👂🛑 Aborting generation requested.")
-        self.transcriber.abort_generation()
+        if self.transcriber:
+            self.transcriber.abort_generation()
 
     def _setup_callbacks(self) -> None:
         """Sets up internal callbacks for the TranscriptionProcessor instance."""
@@ -85,7 +91,20 @@ class AudioInputProcessor:
                 if self.realtime_callback:
                     self.realtime_callback(text)
 
-        self.transcriber.realtime_transcription_callback = partial_transcript_callback
+        if self.transcriber:
+            self.transcriber.realtime_transcription_callback = partial_transcript_callback
+
+    def _apply_pending_callbacks(self) -> None:
+        """Applies pending callbacks to the transcriber when it becomes available."""
+        if self.transcriber and self._pending_callbacks:
+            callbacks = self._pending_callbacks
+            self.transcriber.potential_sentence_end = callbacks.on_potential_sentence
+            self.transcriber.on_tts_allowed_to_synthesize = callbacks.on_tts_allowed_to_synthesize
+            self.transcriber.potential_full_transcription_callback = callbacks.on_potential_final
+            self.transcriber.potential_full_transcription_abort_callback = callbacks.on_potential_abort
+            self.transcriber.full_transcription_callback = callbacks.on_final
+            self.transcriber.before_final_sentence = callbacks.on_before_final
+            logger.info("👂✅ Applied pending callbacks to transcriber")
 
     async def _run_transcription_loop(self) -> None:
         """
@@ -102,6 +121,12 @@ class AudioInputProcessor:
             f"👂▶️ Starting background transcription task ({task_name}).")
         while True:  # Loop restored to continuously call transcribe_loop
             try:
+                # Check if transcriber exists and speech is enabled
+                if self.transcriber is None or not self.speech_enabled:
+                    # Wait for transcriber to be available
+                    await asyncio.sleep(0.1)
+                    continue
+
                 # Run one cycle of the underlying blocking loop
                 await asyncio.to_thread(self.transcriber.transcribe_loop)
                 # If transcribe_loop returns without error, it means one cycle is complete.
@@ -112,7 +137,7 @@ class AudioInputProcessor:
                 await asyncio.sleep(0.01)
             except asyncio.CancelledError:
                 logger.info(f"👂🚫 Transcription loop ({task_name}) cancelled.")
-                # Do not set failure flag on cancellation
+                # Do not set failure flag on cancellation - this is expected during shutdown
                 break  # Exit the while loop
             except Exception as e:
                 # An actual error occurred within transcribe_loop
@@ -156,6 +181,53 @@ class AudioInputProcessor:
             resampled_float, -32768, 32767).astype(np.int16)
 
         return resampled_int16
+
+    def enable_speech_recognition(self) -> None:
+        """
+        Enables speech recognition by creating the transcriber and starting the transcription task.
+        """
+        if not self.speech_enabled:
+            logger.info("👂▶️ Enabling speech recognition...")
+            self.speech_enabled = True
+
+            # Create transcriber if it doesn't exist
+            if self.transcriber is None:
+                self.transcriber = TranscriptionProcessor(
+                    self.language,
+                    on_recording_start_callback=self._on_recording_start,
+                    silence_active_callback=self._silence_active_callback,
+                    is_orpheus=self.is_orpheus,
+                    pipeline_latency=self.pipeline_latency,
+                )
+                # Set up callbacks after creating transcriber
+                self._setup_callbacks()
+                # Set any pending callbacks from server
+                self._apply_pending_callbacks()
+
+            # Ensure transcription task is running (restart if cancelled)
+            if self.transcription_task is None or self.transcription_task.done():
+                logger.info("👂🔄 Restarting transcription task...")
+                self.transcription_task = asyncio.create_task(
+                    self._run_transcription_loop())
+
+            logger.info("👂✅ Speech recognition enabled and STT model loaded")
+
+    def disable_speech_recognition(self) -> None:
+        """
+        Disables speech recognition by cleaning up STT resources while keeping the task alive.
+        """
+        if self.speech_enabled:
+            logger.info("👂⏹️ Disabling speech recognition...")
+            self.speech_enabled = False
+
+            # Shutdown transcriber to free STT resources
+            if self.transcriber:
+                self.transcriber.shutdown()
+                self.transcriber = None
+
+            self._transcription_failed = False  # Reset failure flag
+            logger.info(
+                "👂🛑 Speech recognition disabled and STT model unloaded")
 
     async def process_chunk_queue(self, audio_queue: asyncio.Queue) -> None:
         """
@@ -208,14 +280,18 @@ class AudioInputProcessor:
                 if processed.size == 0:
                     continue  # Skip empty chunks
 
-                # Feed audio only if not interrupted and transcriber should be running
-                if not self.interrupted:
+                # Feed audio only if not interrupted, speech is enabled, and transcriber should be running
+                if not self.interrupted and self.speech_enabled and self.transcriber is not None:
                     # Check failure flag again, as it might have been set between queue.get and here
                     if not self._transcription_failed:
                         # Feed audio to the underlying processor
                         self.transcriber.feed_audio(
                             processed.tobytes(), audio_data)
                     # No 'else' needed here because the checks at the start of the loop handle termination
+                elif not self.speech_enabled:
+                    # Skip audio processing when speech is disabled
+                    logger.debug(
+                        "👂🚫 Skipping audio processing: speech recognition disabled")
 
             except asyncio.CancelledError:
                 logger.info("👂🚫 Audio processing task cancelled.")
@@ -236,19 +312,17 @@ class AudioInputProcessor:
         transcription task.
         """
         logger.info("👂🛑 Shutting down AudioInputProcessor...")
-        # Ensure transcriber shutdown is called first to signal the loop
-        if hasattr(self.transcriber, 'shutdown'):
-            logger.info("👂🛑 Signaling TranscriptionProcessor to shut down.")
-            self.transcriber.shutdown()
-        else:
-            logger.warning(
-                "👂⚠️ TranscriptionProcessor does not have a shutdown method.")
 
+        # Disable speech recognition first (this will shutdown the transcriber and unload STT)
+        if self.speech_enabled:
+            self.disable_speech_recognition()
+
+        # Cancel the transcription task during final shutdown
         if self.transcription_task and not self.transcription_task.done():
             task_name = self.transcription_task.get_name() if hasattr(
                 self.transcription_task, 'get_name') else 'TranscriptionTask'
             logger.info(
-                f"👂🚫 Cancelling background transcription task ({task_name})...")
+                f"👂🛑 Cancelling background transcription task ({task_name})...")
             self.transcription_task.cancel()
             # Optional: Add await with timeout here in an async shutdown context
             # try:

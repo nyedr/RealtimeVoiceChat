@@ -17,13 +17,15 @@ logger = logging.getLogger(__name__)
 USE_TURN_DETECTION = True
 START_STT_SERVER = False  # Set to True to use the client/server version of RealtimeSTT
 
+WHISPER_MODEL = "small.en"
+
 # --- Recorder Configuration (Moved here for clarity, can be externalized) ---
 # Default config if none provided to constructor
 DEFAULT_RECORDER_CONFIG: Dict[str, Any] = {
     "use_microphone": True,
     "spinner": False,
-    "model": "base.en",
-    "realtime_model_type": "base.en",
+    "model": WHISPER_MODEL,
+    "realtime_model_type": WHISPER_MODEL,
     "use_main_model_for_realtime": False,
     "language": "en",  # Default, will be overridden by source_language in __init__
     "silero_sensitivity": 0.05,
@@ -36,11 +38,11 @@ DEFAULT_RECORDER_CONFIG: Dict[str, Any] = {
     "silero_use_onnx": True,
     "silero_deactivity_detection": True,
     "early_transcription_on_silence": 0,
-    "beam_size": 3,
-    "beam_size_realtime": 3,
+    "beam_size": 5,
+    "beam_size_realtime": 5,
     "no_log_file": True,
     "wake_words": "",
-    "wakeword_backend": "pvporcupine",
+    # "wakeword_backend": "pvporcupine",
     "allowed_latency_limit": 500,
     # Callbacks will be added dynamically in _create_recorder
     "debug_mode": True,

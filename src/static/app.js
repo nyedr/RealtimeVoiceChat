@@ -1,22 +1,24 @@
-(function() {
+(function () {
   const originalLog = console.log.bind(console);
   console.log = (...args) => {
     const now = new Date();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const mm = String(now.getMinutes()).padStart(2, '0');
-    const ss = String(now.getSeconds()).padStart(2, '0');
-    const ms = String(now.getMilliseconds()).padStart(3, '0');
-    originalLog(
-      `[${hh}:${mm}:${ss}.${ms}]`,
-      ...args
-    );
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    const ss = String(now.getSeconds()).padStart(2, "0");
+    const ms = String(now.getMilliseconds()).padStart(3, "0");
+    originalLog(`[${hh}:${mm}:${ss}.${ms}]`, ...args);
   };
 })();
 
 const statusDiv = document.getElementById("status");
 const messagesDiv = document.getElementById("messages");
 const speedSlider = document.getElementById("speedSlider");
-speedSlider.disabled = true;  // start disabled
+const textInput = document.getElementById("textInput");
+const sendBtn = document.getElementById("sendBtn");
+const speechToggle = document.getElementById("speechToggle");
+speedSlider.disabled = true; // start disabled
+
+let speechEnabled = false; // Default to speech disabled
 
 let socket = null;
 let audioContext = null;
@@ -33,8 +35,8 @@ let typingAssistant = "";
 
 // --- batching + fixed 8‑byte header setup ---
 const BATCH_SAMPLES = 2048;
-const HEADER_BYTES  = 8;
-const FRAME_BYTES   = BATCH_SAMPLES * 2;
+const HEADER_BYTES = 8;
+const FRAME_BYTES = BATCH_SAMPLES * 2;
 const MESSAGE_BYTES = HEADER_BYTES + FRAME_BYTES;
 
 const bufferPool = [];
@@ -46,14 +48,14 @@ let batchOffset = 0;
 function initBatch() {
   if (!batchBuffer) {
     batchBuffer = bufferPool.pop() || new ArrayBuffer(MESSAGE_BYTES);
-    batchView   = new DataView(batchBuffer);
-    batchInt16  = new Int16Array(batchBuffer, HEADER_BYTES);
+    batchView = new DataView(batchBuffer);
+    batchInt16 = new Int16Array(batchBuffer, HEADER_BYTES);
     batchOffset = 0;
   }
 }
 
 function flushBatch() {
-  const ts = Date.now() & 0xFFFFFFFF;
+  const ts = Date.now() & 0xffffffff;
   batchView.setUint32(0, ts, false);
   const flags = isTTSPlaying ? 1 : 0;
   batchView.setUint32(4, flags, false);
@@ -90,6 +92,13 @@ function base64ToInt16Array(b64) {
 }
 
 async function startRawPcmCapture() {
+  // Only capture audio if speech is enabled
+  if (!speechEnabled) {
+    console.log("Speech disabled, skipping microphone capture");
+    statusDiv.textContent = "Connected (text-only mode)";
+    return;
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -97,15 +106,21 @@ async function startRawPcmCapture() {
         channelCount: 1,
         echoCancellation: true,
         // autoGainControl: true,
-        noiseSuppression: true
-      }
+        noiseSuppression: true,
+      },
     });
     mediaStream = stream;
     initAudioContext();
-    await audioContext.audioWorklet.addModule('/static/pcmWorkletProcessor.js');
-    micWorkletNode = new AudioWorkletNode(audioContext, 'pcm-worklet-processor');
+    await audioContext.audioWorklet.addModule("/static/pcmWorkletProcessor.js");
+    micWorkletNode = new AudioWorkletNode(
+      audioContext,
+      "pcm-worklet-processor"
+    );
 
     micWorkletNode.port.onmessage = ({ data }) => {
+      // Only process audio data if speech is still enabled
+      if (!speechEnabled) return;
+
       const incoming = new Int16Array(data);
       let read = 0;
       while (read < incoming.length) {
@@ -114,12 +129,9 @@ async function startRawPcmCapture() {
           incoming.length - read,
           BATCH_SAMPLES - batchOffset
         );
-        batchInt16.set(
-          incoming.subarray(read, read + toCopy),
-          batchOffset
-        );
+        batchInt16.set(incoming.subarray(read, read + toCopy), batchOffset);
         batchOffset += toCopy;
-        read       += toCopy;
+        read += toCopy;
         if (batchOffset === BATCH_SAMPLES) {
           flushBatch();
         }
@@ -136,33 +148,44 @@ async function startRawPcmCapture() {
 }
 
 async function setupTTSPlayback() {
-  await audioContext.audioWorklet.addModule('/static/ttsPlaybackProcessor.js');
-  ttsWorkletNode = new AudioWorkletNode(
-    audioContext,
-    'tts-playback-processor'
+  // Ensure AudioContext is initialized and resumed
+  initAudioContext();
+
+  // Resume AudioContext if it's suspended (required by browsers)
+  if (audioContext.state === "suspended") {
+    console.log("Resuming suspended AudioContext for TTS playback...");
+    await audioContext.resume();
+  }
+
+  console.log(
+    `AudioContext state: ${audioContext.state}, sampleRate: ${audioContext.sampleRate}`
   );
+
+  await audioContext.audioWorklet.addModule("/static/ttsPlaybackProcessor.js");
+  ttsWorkletNode = new AudioWorkletNode(audioContext, "tts-playback-processor");
 
   ttsWorkletNode.port.onmessage = (event) => {
     const { type } = event.data;
-    if (type === 'ttsPlaybackStarted') {
+    if (type === "ttsPlaybackStarted") {
       if (!isTTSPlaying && socket && socket.readyState === WebSocket.OPEN) {
         isTTSPlaying = true;
         console.log(
           "TTS playback started. Reason: ttsWorkletNode Event ttsPlaybackStarted."
         );
-        socket.send(JSON.stringify({ type: 'tts_start' }));
+        socket.send(JSON.stringify({ type: "tts_start" }));
       }
-    } else if (type === 'ttsPlaybackStopped') {
+    } else if (type === "ttsPlaybackStopped") {
       if (isTTSPlaying && socket && socket.readyState === WebSocket.OPEN) {
         isTTSPlaying = false;
         console.log(
           "TTS playback stopped. Reason: ttsWorkletNode Event ttsPlaybackStopped."
         );
-        socket.send(JSON.stringify({ type: 'tts_stop' }));
+        socket.send(JSON.stringify({ type: "tts_stop" }));
       }
     }
   };
   ttsWorkletNode.connect(audioContext.destination);
+  console.log("TTS playback worklet connected to audio destination");
 }
 
 function cleanupAudio() {
@@ -179,14 +202,14 @@ function cleanupAudio() {
     audioContext = null;
   }
   if (mediaStream) {
-    mediaStream.getAudioTracks().forEach(track => track.stop());
+    mediaStream.getAudioTracks().forEach((track) => track.stop());
     mediaStream = null;
   }
 }
 
 function renderMessages() {
   messagesDiv.innerHTML = "";
-  chatHistory.forEach(msg => {
+  chatHistory.forEach((msg) => {
     const bubble = document.createElement("div");
     bubble.className = `bubble ${msg.role}`;
     bubble.textContent = msg.content;
@@ -235,10 +258,17 @@ function handleJSONMessage({ type, content }) {
     return;
   }
   if (type === "tts_chunk") {
-    if (ignoreIncomingTTS) return;
+    if (ignoreIncomingTTS) {
+      console.log("Ignoring TTS chunk (ignoreIncomingTTS=true)");
+      return;
+    }
     const int16Data = base64ToInt16Array(content);
+    console.log(`Received TTS chunk: ${int16Data.length} samples`);
     if (ttsWorkletNode) {
       ttsWorkletNode.port.postMessage(int16Data);
+      console.log("Sent TTS chunk to worklet");
+    } else {
+      console.warn("No ttsWorkletNode available for TTS chunk");
     }
     return;
   }
@@ -257,17 +287,61 @@ function handleJSONMessage({ type, content }) {
     isTTSPlaying = false;
     ignoreIncomingTTS = true;
     console.log("TTS playback stopped. Reason: tts_interruption.");
-    socket.send(JSON.stringify({ type: 'tts_stop' }));
+    socket.send(JSON.stringify({ type: "tts_stop" }));
     return;
   }
 }
 
 function escapeHtml(str) {
-  return (str ?? '')
+  return (str ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "<")
     .replace(/>/g, ">")
     .replace(/"/g, "&quot;");
+}
+
+function sendTextMessage() {
+  const text = textInput.value.trim();
+  if (!text || !socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  console.log("Sending text message:", text);
+  socket.send(
+    JSON.stringify({
+      type: "text_input",
+      content: text,
+    })
+  );
+
+  // Clear the input field
+  textInput.value = "";
+}
+
+function toggleSpeechRecognition() {
+  speechEnabled = speechToggle.checked;
+  console.log("Speech recognition:", speechEnabled ? "enabled" : "disabled");
+
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(
+      JSON.stringify({
+        type: "toggle_speech",
+        enabled: speechEnabled,
+      })
+    );
+  }
+
+  // Update UI based on speech state
+  updateUIForSpeechState();
+}
+
+function updateUIForSpeechState() {
+  // Update placeholder text based on speech state
+  if (speechEnabled) {
+    textInput.placeholder = "Type a message or use voice...";
+  } else {
+    textInput.placeholder = "Type a message (speech disabled)...";
+  }
 }
 
 // UI Controls
@@ -277,20 +351,35 @@ document.getElementById("clearBtn").onclick = () => {
   typingUser = typingAssistant = "";
   renderMessages();
   if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: 'clear_history' }));
+    socket.send(JSON.stringify({ type: "clear_history" }));
   }
 };
 
 speedSlider.addEventListener("input", (e) => {
   const speedValue = parseInt(e.target.value);
   if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({
-      type: 'set_speed',
-      speed: speedValue
-    }));
+    socket.send(
+      JSON.stringify({
+        type: "set_speed",
+        speed: speedValue,
+      })
+    );
   }
   console.log("Speed setting changed to:", speedValue);
 });
+
+// Text input event listeners
+sendBtn.addEventListener("click", sendTextMessage);
+
+textInput.addEventListener("keypress", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendTextMessage();
+  }
+});
+
+// Speech toggle event listener
+speechToggle.addEventListener("change", toggleSpeechRecognition);
 
 document.getElementById("startBtn").onclick = async () => {
   if (socket && socket.readyState === WebSocket.OPEN) {
@@ -299,14 +388,28 @@ document.getElementById("startBtn").onclick = async () => {
   }
   statusDiv.textContent = "Initializing connection...";
 
-  const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   socket = new WebSocket(`${wsProto}//${location.host}/ws`);
 
   socket.onopen = async () => {
-    statusDiv.textContent = "Connected. Activating mic and TTS…";
+    statusDiv.textContent = "Connected. Setting up...";
+
+    // Send initial speech toggle state to server
+    socket.send(
+      JSON.stringify({
+        type: "toggle_speech",
+        enabled: speechEnabled,
+      })
+    );
+
     await startRawPcmCapture();
     await setupTTSPlayback();
-    speedSlider.disabled = false; 
+    speedSlider.disabled = false;
+    textInput.disabled = false;
+    sendBtn.disabled = false;
+
+    // Update UI based on speech state
+    updateUIForSpeechState();
   };
 
   socket.onmessage = (evt) => {
@@ -325,13 +428,17 @@ document.getElementById("startBtn").onclick = async () => {
     flushRemainder();
     cleanupAudio();
     speedSlider.disabled = true;
+    textInput.disabled = true;
+    sendBtn.disabled = true;
   };
 
   socket.onerror = (err) => {
     statusDiv.textContent = "Connection error.";
     cleanupAudio();
     console.error(err);
-    speedSlider.disabled = true; 
+    speedSlider.disabled = true;
+    textInput.disabled = true;
+    sendBtn.disabled = true;
   };
 };
 
@@ -342,17 +449,28 @@ document.getElementById("stopBtn").onclick = () => {
   }
   cleanupAudio();
   statusDiv.textContent = "Stopped.";
+  textInput.disabled = true;
+  sendBtn.disabled = true;
 };
 
 document.getElementById("copyBtn").onclick = () => {
   const text = chatHistory
-    .map(msg => `${msg.role.charAt(0).toUpperCase() + msg.role.slice(1)}: ${msg.content}`)
-    .join('\n');
-  
-  navigator.clipboard.writeText(text)
+    .map(
+      (msg) =>
+        `${msg.role.charAt(0).toUpperCase() + msg.role.slice(1)}: ${
+          msg.content
+        }`
+    )
+    .join("\n");
+
+  navigator.clipboard
+    .writeText(text)
     .then(() => console.log("Conversation copied to clipboard"))
-    .catch(err => console.error("Copy failed:", err));
+    .catch((err) => console.error("Copy failed:", err));
 };
 
 // First render
 renderMessages();
+
+// Initialize UI state
+updateUIForSpeechState();

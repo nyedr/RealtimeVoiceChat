@@ -3,6 +3,7 @@ import numpy as np
 from scipy.signal import resample_poly
 from typing import Optional
 
+
 class UpsampleOverlap:
     """
     Manages chunk-wise audio upsampling with overlap handling.
@@ -13,6 +14,7 @@ class UpsampleOverlap:
     returned as Base64 encoded strings. It maintains internal state to handle
     the overlap correctly across calls.
     """
+
     def __init__(self):
         """
         Initializes the UpsampleOverlap processor.
@@ -46,12 +48,12 @@ class UpsampleOverlap:
         audio_int16 = np.frombuffer(chunk, dtype=np.int16)
         # Handle potential empty chunks gracefully
         if audio_int16.size == 0:
-             return "" # Return empty string for empty input chunk
+            return ""  # Return empty string for empty input chunk
 
         audio_float = audio_int16.astype(np.float32) / 32768.0
 
-        # Upsample the current chunk independently first, needed for state and first chunk logic
-        upsampled_current_chunk = resample_poly(audio_float, 48000, 24000)
+        # Upsample the current chunk independently first, needed for state and first chunk logic (2:1)
+        upsampled_current_chunk = resample_poly(audio_float, 2, 1)
 
         if self.previous_chunk is None:
             # First chunk: Output the first half of its upsampled version
@@ -60,14 +62,15 @@ class UpsampleOverlap:
         else:
             # Subsequent chunks: Combine previous float chunk with current float chunk
             combined = np.concatenate((self.previous_chunk, audio_float))
-            # Upsample the combined chunk
-            up = resample_poly(combined, 48000, 24000)
+            # Upsample the combined chunk (2:1)
+            up = resample_poly(combined, 2, 1)
 
             # Calculate lengths and indices for extracting the middle part
             # Ensure self.resampled_previous_chunk is not None (shouldn't happen here due to outer if)
             assert self.resampled_previous_chunk is not None
-            prev_len = len(self.resampled_previous_chunk) # Length of the *upsampled* previous chunk
-            h_prev = prev_len // 2 # Midpoint index of the *upsampled* previous chunk
+            # Length of the *upsampled* previous chunk
+            prev_len = len(self.resampled_previous_chunk)
+            h_prev = prev_len // 2  # Midpoint index of the *upsampled* previous chunk
 
             # *** CORRECTED INDEX CALCULATION (Reverted to original) ***
             # Calculate the end index for the part corresponding to the current chunk's main contribution
@@ -78,7 +81,8 @@ class UpsampleOverlap:
 
         # Update state for the next iteration
         self.previous_chunk = audio_float
-        self.resampled_previous_chunk = upsampled_current_chunk # Store the upsampled *current* chunk for the *next* overlap
+        # Store the upsampled *current* chunk for the *next* overlap
+        self.resampled_previous_chunk = upsampled_current_chunk
 
         # Convert the extracted part back to PCM16 bytes and encode
         pcm = (part * 32767).astype(np.int16).tobytes()
@@ -101,10 +105,11 @@ class UpsampleOverlap:
         # *** CORRECTED FLUSH LOGIC (Reverted to original) ***
         if self.resampled_previous_chunk is not None:
             # Return the entire last upsampled chunk as per original logic
-            pcm = (self.resampled_previous_chunk * 32767).astype(np.int16).tobytes()
+            pcm = (self.resampled_previous_chunk *
+                   32767).astype(np.int16).tobytes()
 
             # Clear state after flushing
             self.previous_chunk = None
             self.resampled_previous_chunk = None
             return base64.b64encode(pcm).decode('utf-8')
-        return None # Return None if there's nothing to flush
+        return None  # Return None if there's nothing to flush

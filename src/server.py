@@ -32,19 +32,17 @@ logger.info("🖥️👋 Welcome to local real-time voice chat")
 
 USE_SSL = False
 TTS_START_ENGINE = "orpheus"
-TTS_START_ENGINE = "kokoro"
 TTS_START_ENGINE = "coqui"
+TTS_START_ENGINE = "kokoro"
 TTS_START_ENGINE = "kyutai"
-TTS_ORPHEUS_MODEL = "Orpheus_3B-1BaseGGUF/mOrpheus_3B-1Base_Q4_K_M.gguf"
 TTS_ORPHEUS_MODEL = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf"
 
-LLM_START_PROVIDER = "ollama"
-LLM_START_MODEL = "qwen2.5vl:7b"
-
 LLM_START_PROVIDER = "lmstudio"
-LLM_START_MODEL = "lmstudio-community/model@q4_k_m"
+# LLM_START_MODEL = "qwen3-8b-abliterated"
+# LLM_START_MODEL = "qwen3-4b-instruct"
+LLM_START_MODEL = "silly-v0.2"
 
-NO_THINK = False
+NO_THINK = True
 DIRECT_STREAM = TTS_START_ENGINE in ["orpheus", "kyutai"]
 
 logger.info(
@@ -325,11 +323,29 @@ async def process_incoming_data(ws: WebSocket, app: FastAPI, incoming_chunks: as
                 elif msg_type == "set_speed":
                     speed_value = data.get("speed", 0)
                     speed_factor = speed_value / 100.0  # Convert 0-100 to 0.0-1.0
-                    turn_detection = app.state.AudioInputProcessor.transcriber.turn_detection
-                    if turn_detection:
-                        turn_detection.update_settings(speed_factor)
+                    if app.state.AudioInputProcessor.transcriber:
+                        turn_detection = app.state.AudioInputProcessor.transcriber.turn_detection
+                        if turn_detection:
+                            turn_detection.update_settings(speed_factor)
+                            logger.info(
+                                f"🖥️⚙️ Updated turn detection settings to factor: {speed_factor:.2f}")
+                    else:
                         logger.info(
-                            f"🖥️⚙️ Updated turn detection settings to factor: {speed_factor:.2f}")
+                            "🖥️⚙️ Cannot update speed: speech recognition disabled")
+                elif msg_type == "text_input":
+                    # Handle text-only input without transcription
+                    text_content = data.get("content", "").strip()
+                    if text_content:
+                        logger.info(
+                            f"🖥️💬 Received text input: '{text_content}'")
+                        # Process text input directly through the callbacks
+                        await process_text_input(app, callbacks, text_content)
+                elif msg_type == "toggle_speech":
+                    # Handle speech recognition toggle
+                    enabled = data.get("enabled", False)
+                    logger.info(
+                        f"🖥️🎙️ Speech recognition {'enabled' if enabled else 'disabled'}")
+                    await handle_speech_toggle(app, callbacks, enabled)
 
     except asyncio.CancelledError:
         pass  # Task cancellation is expected on disconnect
@@ -342,6 +358,83 @@ async def process_incoming_data(ws: WebSocket, app: FastAPI, incoming_chunks: as
     except Exception as e:
         logger.exception(
             f"🖥️💥 {Colors.apply('EXCEPTION').red} in process_incoming_data: {repr(e)}")
+
+
+async def process_text_input(app: FastAPI, callbacks: 'TranscriptionCallbacks', text_content: str) -> None:
+    """
+    Processes text input directly without transcription, mimicking the voice input flow.
+
+    Simulates the transcription pipeline by directly calling the appropriate callbacks
+    for partial transcription, potential sentence detection, and final transcription.
+
+    Args:
+        app: The FastAPI application instance.
+        callbacks: The TranscriptionCallbacks instance for this connection.
+        text_content: The text content to process.
+    """
+    try:
+        # Send as partial transcription first
+        callbacks.on_partial(text_content)
+
+        # Simulate a small delay to mimic real transcription timing
+        await asyncio.sleep(0.1)
+
+        # Trigger potential sentence detection (this may start generation)
+        callbacks.on_potential_sentence(text_content)
+
+        # Another small delay
+        await asyncio.sleep(0.1)
+
+        # Mark as potential final
+        callbacks.on_potential_final(text_content)
+
+        # Small delay before final processing
+        await asyncio.sleep(0.1)
+
+        # Process as final transcription (this triggers the full response flow)
+        # Empty audio bytes since this is text input
+        callbacks.on_before_final(b"", text_content)
+        callbacks.on_final(text_content)
+
+        logger.info(f"🖥️✅ Text input processed successfully: '{text_content}'")
+
+    except Exception as e:
+        logger.exception(f"🖥️💥 Error processing text input: {repr(e)}")
+
+
+async def handle_speech_toggle(app: FastAPI, callbacks: 'TranscriptionCallbacks', enabled: bool) -> None:
+    """
+    Handles speech recognition toggle by enabling/disabling audio processing.
+
+    When speech is disabled, the AudioInputProcessor stops processing audio chunks
+    and STT models can be unloaded to save resources.
+
+    Args:
+        app: The FastAPI application instance.
+        callbacks: The TranscriptionCallbacks instance for this connection.
+        enabled: Whether speech recognition should be enabled.
+    """
+    try:
+        # Update connection-specific speech state
+        callbacks.speech_enabled = enabled
+
+        if enabled:
+            logger.info("🖥️🎙️ Enabling speech recognition for this connection")
+            # Enable speech recognition
+            app.state.AudioInputProcessor.enable_speech_recognition()
+            # Apply pending callbacks if transcriber was just created
+            app.state.AudioInputProcessor._apply_pending_callbacks()
+        else:
+            logger.info(
+                "🖥️🎙️ Disabling speech recognition for this connection")
+            # Disable speech recognition
+            app.state.AudioInputProcessor.disable_speech_recognition()
+
+        logger.info(
+            f"🖥️✅ Speech toggle processed successfully: {'enabled' if enabled else 'disabled'}")
+
+    except Exception as e:
+        logger.exception(f"🖥️💥 Error handling speech toggle: {repr(e)}")
 
 
 async def send_text_messages(ws: WebSocket, message_queue: asyncio.Queue) -> None:
@@ -507,6 +600,17 @@ async def send_tts_chunks(app: FastAPI, message_queue: asyncio.Queue, callbacks:
                 audio_final_finished = app.state.SpeechPipelineManager.running_generation.audio_final_finished
 
                 if not final_expected or audio_final_finished:
+                    # Flush any remaining upsampled audio tail before finishing
+                    try:
+                        tail_chunk = app.state.Upsampler.flush_base64_chunk()
+                        if tail_chunk:
+                            message_queue.put_nowait({
+                                "type": "tts_chunk",
+                                "content": tail_chunk
+                            })
+                    except Exception as e:
+                        logger.warning(
+                            f"🖥️⚠️ Upsampler flush failed: {repr(e)}")
                     logger.info(
                         "🖥️🏁 Sending of TTS chunks and 'user request/assistant answer' cycle finished.")
                     callbacks.send_final_assistant_answer()  # Callbacks method
@@ -584,6 +688,7 @@ class TranscriptionCallbacks:
         self.tts_chunk_sent: bool = False
         self.tts_client_playing: bool = False
         self.interruption_time: float = 0.0
+        self.speech_enabled: bool = False  # Default to speech disabled
 
         # These were already effectively instance variables or reset logic existed
         self.silence_active: bool = True
@@ -918,7 +1023,7 @@ class TranscriptionCallbacks:
                     "type": "final_assistant_answer",
                     "content": cleaned_answer
                 })
-                app.state.SpeechPipelineManager.history.append(
+                self.app.state.SpeechPipelineManager.history.append(
                     {"role": "assistant", "content": cleaned_answer})
                 self.final_assistant_answer_sent = True
                 self.final_assistant_answer = cleaned_answer  # Store the sent answer
@@ -961,14 +1066,20 @@ async def websocket_endpoint(ws: WebSocket):
     # Assign callbacks to the AudioInputProcessor (global component)
     # These methods within callbacks will now operate on its *instance* state
     app.state.AudioInputProcessor.realtime_callback = callbacks.on_partial
-    app.state.AudioInputProcessor.transcriber.potential_sentence_end = callbacks.on_potential_sentence
-    app.state.AudioInputProcessor.transcriber.on_tts_allowed_to_synthesize = callbacks.on_tts_allowed_to_synthesize
-    app.state.AudioInputProcessor.transcriber.potential_full_transcription_callback = callbacks.on_potential_final
-    app.state.AudioInputProcessor.transcriber.potential_full_transcription_abort_callback = callbacks.on_potential_abort
-    app.state.AudioInputProcessor.transcriber.full_transcription_callback = callbacks.on_final
-    app.state.AudioInputProcessor.transcriber.before_final_sentence = callbacks.on_before_final
     app.state.AudioInputProcessor.recording_start_callback = callbacks.on_recording_start
     app.state.AudioInputProcessor.silence_active_callback = callbacks.on_silence_active
+
+    # Set transcriber callbacks if transcriber exists
+    if app.state.AudioInputProcessor.transcriber:
+        app.state.AudioInputProcessor.transcriber.potential_sentence_end = callbacks.on_potential_sentence
+        app.state.AudioInputProcessor.transcriber.on_tts_allowed_to_synthesize = callbacks.on_tts_allowed_to_synthesize
+        app.state.AudioInputProcessor.transcriber.potential_full_transcription_callback = callbacks.on_potential_final
+        app.state.AudioInputProcessor.transcriber.potential_full_transcription_abort_callback = callbacks.on_potential_abort
+        app.state.AudioInputProcessor.transcriber.full_transcription_callback = callbacks.on_final
+        app.state.AudioInputProcessor.transcriber.before_final_sentence = callbacks.on_before_final
+
+    # Store callbacks in AudioInputProcessor for later assignment when transcriber is created
+    app.state.AudioInputProcessor._pending_callbacks = callbacks
 
     # Assign callback to the SpeechPipelineManager (global component)
     app.state.SpeechPipelineManager.on_partial_assistant_text = callbacks.on_partial_assistant_text
@@ -1014,7 +1125,7 @@ if __name__ == "__main__":
     # Run the server without SSL
     if not USE_SSL:
         logger.info("🖥️▶️ Starting server without SSL.")
-        uvicorn.run("server:app", host="0.0.0.0", port=8000, log_config=None)
+        uvicorn.run("server:app", host="127.0.0.1", port=8000, log_config=None)
 
     else:
         logger.info("🖥️🔒 Attempting to start server with SSL.")
@@ -1038,7 +1149,7 @@ if __name__ == "__main__":
             f"🖥️▶️ Starting server with SSL (cert: {cert_file}, key: {key_file}).")
         uvicorn.run(
             "server:app",
-            host="0.0.0.0",
+            host="127.0.0.1",
             port=8000,
             log_config=None,
             ssl_certfile=cert_file,

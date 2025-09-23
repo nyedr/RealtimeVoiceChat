@@ -239,6 +239,28 @@ class AudioProcessor:
         self.on_first_audio_chunk_synthesize: Optional[Callable[[
         ], None]] = None
 
+        # Mapping of emotion tags to Kyutai voice identifiers
+        # Only used when engine_name == "kyutai"
+        # Voice mapping based on get_voices() method from kyutai_engine.py
+        self.KYUTAI_EMOTION_TO_VOICE: dict[str, str] = {
+            "default": "expresso/ex01-ex02_default_001_channel2_198s.wav",
+            "neutral": "expresso/ex03-ex01_neutral_001_channel1_334s.wav",
+            "happy": "expresso/ex04-ex02_happy_001_channel2_140s.wav",
+            "sad": "expresso/ex03-ex01_sad_001_channel1_334s.wav",
+            "enunciated": "expresso/ex01-ex02_enunciated_001_channel2_354s.wav",
+            "fast": "expresso/ex01-ex02_fast_001_channel2_73s.wav",
+            "projected": "expresso/ex01-ex02_projected_002_channel2_248s.wav",
+            "whisper": "expresso/ex01-ex02_whisper_001_channel2_717s.wav",
+            "disgusted": "expresso/ex04-ex01_disgusted_001_channel1_130s.wav",
+            "laughing": "expresso/ex04-ex01_laughing_001_channel1_306s.wav",
+            "awe": "expresso/ex04-ex02_awe_001_channel2_1013s.wav",
+            "bored": "expresso/ex04-ex02_bored_001_channel2_232s.wav",
+            "confused": "expresso/ex04-ex02_confused_001_channel2_488s.wav",
+            "desire": "expresso/ex04-ex02_desire_001_channel2_694s.wav",
+            "fearful": "expresso/ex04-ex02_fearful_001_channel2_266s.wav",
+            "sarcastic": "expresso/ex04-ex02_sarcastic_001_channel2_466s.wav",
+        }
+
     def on_audio_stream_stop(self) -> None:
         """
         Callback executed when the RealtimeTTS audio stream stops processing.
@@ -247,6 +269,39 @@ class AudioProcessor:
         """
         logger.info("👄🛑 Audio stream stopped.")
         self.finished_event.set()
+
+    def set_voice_by_emotion(self, emotion: Optional[str]) -> None:
+        """
+        Sets the Kyutai voice based on an emotion tag. No-ops for other engines.
+
+        Args:
+            emotion: The desired emotion tag (e.g., "happy"). Defaults to "default" if None/unknown.
+        """
+        if self.engine_name != "kyutai":
+            return
+        key = (emotion or "default").strip().lower()
+        candidates: list[str] = []
+        if key in self.KYUTAI_EMOTION_TO_VOICE:
+            candidates.append(self.KYUTAI_EMOTION_TO_VOICE[key])
+        for fb in ("neutral", "happy", "default"):
+            if fb != key and fb in self.KYUTAI_EMOTION_TO_VOICE:
+                candidates.append(self.KYUTAI_EMOTION_TO_VOICE[fb])
+
+        last_error: Optional[Exception] = None
+        for candidate in candidates:
+            try:
+                self.engine.set_voice(candidate)
+                logger.info(
+                    f"👄🎚️ Kyutai voice set to emotion='{key}' → '{candidate}'")
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"👄⚠️ Failed to set Kyutai voice candidate '{candidate}' for emotion '{key}': {e}")
+
+        if last_error is not None:
+            logger.exception(
+                f"👄💥 Could not set any Kyutai voice for emotion '{key}'. Last error: {last_error}")
 
     def synthesize(
         self,

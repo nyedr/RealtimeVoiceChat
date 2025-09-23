@@ -5,7 +5,7 @@ import threading
 import logging
 import time
 from queue import Queue, Empty
-import sys
+import re
 
 # (Make sure real/mock imports are correct)
 from .audio_module import AudioProcessor
@@ -117,6 +117,10 @@ class RunningGeneration:
         self.final_answer: str = ""
 
         self.completed: bool = False
+
+        # Voice control state parsed from LLM output tag [voice=EMOTION]
+        self.selected_emotion: Optional[str] = None
+        self.voice_tag_parsed: bool = False
 
 
 class SpeechPipelineManager:
@@ -323,7 +327,67 @@ class SpeechPipelineManager:
         Returns:
             The preprocessed text chunk.
         """
-        return chunk.replace("—", "-").replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'").replace("…", "...")
+        text = chunk.replace("—", "-") \
+            .replace("“", '"') \
+            .replace("”", '"') \
+            .replace("‘", "'") \
+            .replace("’", "'") \
+            .replace("…", "...")
+
+        if self.no_think:
+            text = self.remove_think_tags(text)
+        return text
+
+    # --- Voice Tag Parsing ---
+    def _attempt_parse_voice_tag_on_accumulator(self, current_gen: 'RunningGeneration'):
+        """
+        Attempts to parse a leading [voice=EMOTION] tag from the start of
+        current_gen.quick_answer. If found, stores the emotion and removes
+        the tag from the accumulator. If enough text accumulates without a
+        valid tag, marks as parsed with no selection.
+        """
+        try:
+            if current_gen.voice_tag_parsed:
+                return
+            text = current_gen.quick_answer or ""
+            # Match only at the very beginning
+            m = re.match(r"^\s*\[voice=([^\]]+)\]\s*",
+                         text, flags=re.IGNORECASE)
+            if m:
+                emotion = m.group(1).strip().lower()
+                current_gen.selected_emotion = emotion
+                current_gen.voice_tag_parsed = True
+                current_gen.quick_answer = text[m.end():]
+                logger.info(f"🗣️🎚️ Voice tag parsed: emotion='{emotion}'")
+                return
+            # Heuristic: if we have enough prefix without a tag, stop trying
+            if len(text) >= 64 or (']' in text[:32] and not text.strip().startswith('[')):
+                current_gen.voice_tag_parsed = True
+        except Exception as e:
+            logger.warning(f"🗣️🎚️⚠️ Error parsing voice tag: {e}")
+            current_gen.voice_tag_parsed = True
+
+    def _strip_voice_tag_from_text(self, txt: str, current_gen: 'RunningGeneration') -> str:
+        """
+        Strips a leading [voice=EMOTION] tag from an arbitrary text snippet and
+        updates current_gen selection if not already parsed.
+        """
+        try:
+            if not txt:
+                return txt
+            m = re.match(r"^\s*\[voice=([^\]]+)\]\s*",
+                         txt, flags=re.IGNORECASE)
+            if m:
+                emotion = m.group(1).strip().lower()
+                if not current_gen.voice_tag_parsed:
+                    current_gen.selected_emotion = emotion
+                    current_gen.voice_tag_parsed = True
+                    logger.info(
+                        f"🗣️🎚️ Voice tag parsed (stripper): emotion='{emotion}'")
+                return txt[m.end():]
+            return txt
+        except Exception:
+            return txt
 
     def clean_quick_answer(self, text: str) -> str:
         """
@@ -351,6 +415,30 @@ class SpeechPipelineManager:
                     current_text = current_text[len(pattern):]
 
         return current_text
+
+    def remove_think_tags(self, text: str) -> str:
+        """
+        Remove any '<think>...</think>' blocks and stray think tags from text.
+
+        Also collapses excessive whitespace.
+
+        Args:
+            text: The input text possibly containing think tags.
+
+        Returns:
+            The text with think tags removed.
+        """
+        try:
+            # Remove full blocks first (case-insensitive, dot matches newlines)
+            cleaned = re.sub(r"(?is)<think>.*?</think>", " ", text)
+            # Remove any stray opening/closing tags
+            cleaned = cleaned.replace("<think>", " ").replace("</think>", " ")
+            # Normalize internal whitespace (do NOT strip edges to preserve streaming spaces)
+            cleaned = re.sub(r"\s{2,}", " ", cleaned)
+            return cleaned
+        except Exception:
+            # In case of any regex issues, fall back to a simple replacement
+            return text.replace("<think>", " ").replace("</think>", " ")
 
     def _llm_inference_worker(self):
         """
@@ -413,6 +501,12 @@ class SpeechPipelineManager:
                     chunk = self.preprocess_chunk(chunk)
                     token_count += 1
                     current_gen.quick_answer += chunk
+                    # Attempt to parse a leading voice tag once enough accumulates
+                    self._attempt_parse_voice_tag_on_accumulator(current_gen)
+                    # Do not include the tag in what the user hears
+                    if token_count == 1 and not current_gen.voice_tag_parsed:
+                        # First token may contain the tag; ensure we keep accumulator consistent
+                        pass
                     if self.no_think:
                         current_gen.quick_answer = self.clean_quick_answer(
                             current_gen.quick_answer)
@@ -430,8 +524,10 @@ class SpeechPipelineManager:
                                 f"🗣️🧠✔️ [Gen {gen_id}] LLM Worker:  {Colors.apply('QUICK ANSWER FOUND:').magenta} {context}, overhang: {overhang}")
                             current_gen.quick_answer = context
                             if self.on_partial_assistant_text:
-                                self.on_partial_assistant_text(
-                                    current_gen.quick_answer)
+                                # Strip any control tag before sending to client
+                                safe_txt = self._strip_voice_tag_from_text(
+                                    current_gen.quick_answer, current_gen)
+                                self.on_partial_assistant_text(safe_txt)
                             current_gen.quick_answer_overhang = overhang
                             current_gen.quick_answer_provided = True
                             self.llm_answer_ready_event.set()  # Signal TTS quick worker
@@ -450,8 +546,9 @@ class SpeechPipelineManager:
                     # quick_answer already contains the full text
                     current_gen.quick_answer_provided = True  # Mark as provided
                     if self.on_partial_assistant_text:
-                        self.on_partial_assistant_text(
-                            current_gen.quick_answer)
+                        safe_txt = self._strip_voice_tag_from_text(
+                            current_gen.quick_answer, current_gen)
+                        self.on_partial_assistant_text(safe_txt)
                     self.llm_answer_ready_event.set()  # Signal TTS quick worker
 
             except Exception as e:
@@ -663,28 +760,89 @@ class SpeechPipelineManager:
             # --- End tts_quick_allowed_event Wait Logic ---
 
             try:
+                # Ensure Kyutai voice is set based on parsed emotion before synthesis
+                try:
+                    if self.audio and hasattr(self.audio, 'set_voice_by_emotion'):
+                        self.audio.set_voice_by_emotion(
+                            current_gen.selected_emotion)
+                except Exception as v_e:
+                    logger.warning(
+                        f"🗣️🎚️⚠️ [Gen {gen_id}] Failed to set voice before quick TTS: {v_e}")
                 # Check again for aborts right before synthesis call
                 if self.stop_tts_quick_request_event.is_set() or current_gen.abortion_started:
                     logger.info(
                         f"🗣️👄❌ [Gen {gen_id}] Quick TTS Worker: Aborting TTS synthesis due to stop request or abortion flag.")
                     current_gen.audio_quick_aborted = True
                 else:
-                    logger.info(
-                        f"🗣️👄🎶 [Gen {gen_id}] Quick TTS Worker: Synthesizing: '{current_gen.quick_answer[:50]}...'")
-                    completed = self.audio.synthesize(
-                        current_gen.quick_answer,
-                        current_gen.audio_chunks,
-                        self.stop_tts_quick_request_event  # Pass the event for the synthesizer to check
-                    )
-
-                    if not completed:
-                        # Synthesis was stopped by the stop_tts_quick_request_event
+                    # If Kyutai, unify quick+final into a single streaming pass using generator
+                    if getattr(self.audio, 'engine_name', '') == 'kyutai':
                         logger.info(
-                            f"🗣️👄❌ [Gen {gen_id}] Quick TTS Worker: Synthesis stopped via event.")
-                        current_gen.audio_quick_aborted = True
+                            f"🗣️👄🎶 [Gen {gen_id}] Quick TTS Worker: Kyutai unified streaming start.")
+
+                        def unified_generator():
+                            # Yield the quick answer first (strip tag if present)
+                            quick_text = self._strip_voice_tag_from_text(
+                                current_gen.quick_answer, current_gen)
+                            if quick_text:
+                                yield self.preprocess_chunk(quick_text)
+
+                            # Yield overhang next, updating final_answer and UI
+                            if current_gen.quick_answer_overhang:
+                                overhang = self.preprocess_chunk(
+                                    current_gen.quick_answer_overhang)
+                                current_gen.final_answer += overhang
+                                if self.on_partial_assistant_text:
+                                    try:
+                                        self.on_partial_assistant_text(
+                                            current_gen.quick_answer + current_gen.final_answer)
+                                    except Exception as cb_e:
+                                        logger.warning(
+                                            f"🗣️💥 Callback error in on_partial_assistant_text (unified overhang): {cb_e}")
+                                yield overhang
+
+                            # Now yield remaining LLM chunks
+                            try:
+                                for chunk in current_gen.llm_generator:
+                                    if self.stop_tts_quick_request_event.is_set():
+                                        logger.info(
+                                            f"🗣️👄❌ [Gen {gen_id}] Unified TTS Gen: Stop request detected during LLM iteration.")
+                                        current_gen.audio_final_aborted = True
+                                        break
+                                    pre = self.preprocess_chunk(chunk)
+                                    pre = self._strip_voice_tag_from_text(
+                                        pre, current_gen)
+                                    current_gen.final_answer += pre
+                                    if self.on_partial_assistant_text:
+                                        try:
+                                            self.on_partial_assistant_text(
+                                                current_gen.quick_answer + current_gen.final_answer)
+                                        except Exception as cb_e:
+                                            logger.warning(
+                                                f"🗣️💥 Callback error in on_partial_assistant_text (unified final): {cb_e}")
+                                    yield pre
+                            except Exception as gen_e:
+                                logger.exception(
+                                    f"🗣️👄💥 [Gen {gen_id}] Unified TTS Gen: Error iterating LLM generator: {gen_e}")
+                                current_gen.audio_final_aborted = True
+
+                        # Mark final phase as started to prevent separate final worker from running
+                        current_gen.tts_final_started = True
+                        completed = self.audio.synthesize_generator(
+                            unified_generator(),
+                            current_gen.audio_chunks,
+                            self.stop_tts_quick_request_event
+                        )
                     else:
                         logger.info(
-                            f"🗣️👄✅ [Gen {gen_id}] Quick TTS Worker: Synthesis completed successfully.")
+                            f"🗣️👄🎶 [Gen {gen_id}] Quick TTS Worker: Synthesizing: '{current_gen.quick_answer[:50]}...'")
+                        # Ensure the spoken text has the control tag stripped
+                        quick_text = self._strip_voice_tag_from_text(
+                            current_gen.quick_answer, current_gen)
+                        completed = self.audio.synthesize(
+                            quick_text,
+                            current_gen.audio_chunks,
+                            self.stop_tts_quick_request_event  # Pass the event for the synthesizer to check
+                        )
 
             except Exception as e:
                 logger.exception(
@@ -712,6 +870,18 @@ class SpeechPipelineManager:
                 # Mark quick audio phase as done (even if aborted)
                 current_gen.audio_quick_finished = True
 
+                # If unified kyutai streaming was used, also mark final as done/aborted accordingly
+                if getattr(self.audio, 'engine_name', '') == 'kyutai':
+                    if current_gen.audio_final_aborted or self.stop_tts_quick_request_event.is_set():
+                        logger.info(
+                            f"🗣️👄❌ [Gen {gen_id}] Unified Final TTS Marked as Aborted/Incomplete.")
+                        current_gen.audio_final_aborted = True
+                    else:
+                        logger.info(
+                            f"🗣️👄✅ [Gen {gen_id}] Unified Final TTS Finished Successfully.")
+                        current_gen.tts_final_finished_event.set()
+                    current_gen.audio_final_finished = True
+
     def _tts_final_inference_worker(self):
         """
         Worker thread target that handles TTS synthesis for the 'final' part of the answer.
@@ -738,6 +908,9 @@ class SpeechPipelineManager:
             if not current_gen:
                 continue  # No active generation
             if current_gen.tts_final_started:
+                # If Kyutai unified streaming already started final, skip worker
+                if getattr(self.audio, 'engine_name', '') == 'kyutai':
+                    continue
                 continue  # Final TTS already running for this gen
             if not current_gen.tts_quick_started:
                 continue  # Quick TTS hasn't even started
@@ -769,6 +942,8 @@ class SpeechPipelineManager:
                 if current_gen.quick_answer_overhang:
                     preprocessed_overhang = self.preprocess_chunk(
                         current_gen.quick_answer_overhang)
+                    preprocessed_overhang = self._strip_voice_tag_from_text(
+                        preprocessed_overhang, current_gen)
                     logger.debug(
                         f"🗣️👄< [Gen {gen_id}] Final TTS Gen: Yielding overhang: '{preprocessed_overhang[:50]}...'")
                     current_gen.final_answer += preprocessed_overhang  # Add preprocessed version
@@ -796,6 +971,8 @@ class SpeechPipelineManager:
                             break  # Stop yielding
 
                         preprocessed_chunk = self.preprocess_chunk(chunk)
+                        preprocessed_chunk = self._strip_voice_tag_from_text(
+                            preprocessed_chunk, current_gen)
                         current_gen.final_answer += preprocessed_chunk
                         if self.on_partial_assistant_text:
                             # logger.debug(f"🗣️👄< [Gen {gen_id}] Final TTS Worker on_partial_assistant_text: Sending final chunk: {preprocessed_chunk[:30]}")
@@ -823,6 +1000,14 @@ class SpeechPipelineManager:
             try:
                 logger.info(
                     f"🗣️👄🎶 [Gen {gen_id}] Final TTS Worker: Synthesizing remaining text...")
+                # Ensure Kyutai voice is set based on parsed emotion before final synthesis
+                try:
+                    if self.audio and hasattr(self.audio, 'set_voice_by_emotion'):
+                        self.audio.set_voice_by_emotion(
+                            current_gen.selected_emotion)
+                except Exception as v_e:
+                    logger.warning(
+                        f"🗣️🎚️⚠️ [Gen {gen_id}] Failed to set voice before final TTS: {v_e}")
                 completed = self.audio.synthesize_generator(
                     get_generator(),
                     current_gen.audio_chunks,

@@ -9,19 +9,35 @@ class TTSPlaybackProcessor extends AudioWorkletProcessor {
     // Listen for incoming messages
     this.port.onmessage = (event) => {
       // Check if this is a control message (object with a "type" property).
-      if (event.data && typeof event.data === "object" && event.data.type === "clear") {
+      if (
+        event.data &&
+        typeof event.data === "object" &&
+        event.data.type === "clear"
+      ) {
         // Clear the TTS buffer and reset playback state.
+        console.log("TTS Worklet: Clearing buffer");
         this.bufferQueue = [];
         this.readOffset = 0;
         this.samplesRemaining = 0;
         this.isPlaying = false;
         return;
       }
-      
+
       // Otherwise assume it's a PCM chunk (e.g., an Int16Array)
-      // (You may also check here if event.data instanceof Int16Array if needed)
-      this.bufferQueue.push(event.data);
-      this.samplesRemaining += event.data.length;
+      if (event.data instanceof Int16Array) {
+        console.log(
+          `TTS Worklet: Received ${event.data.length} samples, total queued: ${
+            this.samplesRemaining + event.data.length
+          }`
+        );
+        this.bufferQueue.push(event.data);
+        this.samplesRemaining += event.data.length;
+      } else {
+        console.warn(
+          "TTS Worklet: Received unexpected data type:",
+          typeof event.data
+        );
+      }
     };
   }
 
@@ -32,14 +48,15 @@ class TTSPlaybackProcessor extends AudioWorkletProcessor {
       outputChannel.fill(0);
       if (this.isPlaying) {
         this.isPlaying = false;
-        this.port.postMessage({ type: 'ttsPlaybackStopped' });
+        this.port.postMessage({ type: "ttsPlaybackStopped" });
       }
       return true;
     }
 
     if (!this.isPlaying) {
       this.isPlaying = true;
-      this.port.postMessage({ type: 'ttsPlaybackStarted' });
+      console.log("TTS Worklet: Starting playback");
+      this.port.postMessage({ type: "ttsPlaybackStarted" });
     }
 
     let outIdx = 0;
@@ -65,4 +82,4 @@ class TTSPlaybackProcessor extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor('tts-playback-processor', TTSPlaybackProcessor);
+registerProcessor("tts-playback-processor", TTSPlaybackProcessor);

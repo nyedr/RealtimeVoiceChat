@@ -162,7 +162,7 @@ class KyutaiEngine(BaseEngine):
         voice_repo: str = DEFAULT_DSM_TTS_VOICE_REPO,
         voice: Union[str, KyutaiVoice] = DEFAULT_VOICE,
         device: str = "cuda",
-        n_q: int = 32,
+        n_q: int = 24,
         temp: float = 0.6,
         cfg_coef: float = 2.0,
         debug: bool = False
@@ -215,6 +215,11 @@ class KyutaiEngine(BaseEngine):
     def _load_model(self):
         """Load the Kyutai TTS model and prepare voice conditions."""
         try:
+            # Avoid re-loading if already initialized (post_init may be called twice)
+            if getattr(self, "tts_model", None) is not None:
+                logging.debug(
+                    "Kyutai TTS model already loaded; skipping reload.")
+                return
             logging.info("Loading Kyutai TTS model...")
             checkpoint_info = CheckpointInfo.from_hf_repo(self.hf_repo)
             self.tts_model = TTSModel.from_checkpoint_info(
@@ -342,7 +347,8 @@ class KyutaiEngine(BaseEngine):
                     f"Synthesizing text: '{text_str[:50]}{'...' if len(text_str) > 50 else ''}'")
 
             # Prepare the script entries
-            entries = self._prepare_script(text_str.strip(), first_turn=True)
+            # Use consistent conditioning across quick/final phases to avoid voice shifts
+            entries = self._prepare_script(text_str.strip(), first_turn=False)
 
             # Set up frame callback to put audio in queue
             def on_frame(frame):
@@ -417,11 +423,39 @@ class KyutaiEngine(BaseEngine):
         # from the voice repository
         default_voices = [
             KyutaiVoice(
+                "expresso/ex01-ex02_default_001_channel2_198s.wav", "Expresso Default"),
+            KyutaiVoice(
                 "expresso/ex03-ex01_happy_001_channel1_334s.wav", "Expresso Neu"),
             KyutaiVoice(
                 "expresso/ex03-ex01_sad_001_channel1_334s.wav", "Expresso Sad"),
             KyutaiVoice(
                 "expresso/ex03-ex01_neutral_001_channel1_334s.wav", "Expresso Neutral"),
+            KyutaiVoice(
+                "expresso/ex01-ex02_enunciated_001_channel2_354s.wav", "Expresso Enunciated"),
+            KyutaiVoice(
+                "expresso/ex01-ex02_fast_001_channel2_73s.wav", "Expresso Fast"),
+            KyutaiVoice(
+                "expresso/ex01-ex02_projected_002_channel2_248s.wav", "Expresso Projected"),
+            KyutaiVoice(
+                "expresso/ex01-ex02_whisper_001_channel2_717s.wav", "Expresso Whisper"),
+            KyutaiVoice(
+                "expresso/ex04-ex01_disgusted_001_channel1_130s.wav", "Expresso Disgusted"),
+            KyutaiVoice(
+                "expresso/ex04-ex01_laughing_001_channel1_306s.wav", "Expresso Laughing"),
+            KyutaiVoice(
+                "expresso/ex04-ex02_awe_001_channel2_1013s.wav", "Expresso Awe"),
+            KyutaiVoice(
+                "expresso/ex04-ex02_bored_001_channel2_232s.wav", "Expresso Bored"),
+            KyutaiVoice(
+                "expresso/ex04-ex02_confused_001_channel2_488s.wav", "Expresso Confused"),
+            KyutaiVoice(
+                "expresso/ex04-ex02_desire_001_channel2_694s.wav", "Expresso Desire"),
+            KyutaiVoice(
+                "expresso/ex04-ex02_fearful_001_channel2_266s.wav", "Expresso Fearful"),
+            KyutaiVoice(
+                "expresso/ex04-ex02_happy_001_channel2_140s.wav", "Expresso Happy"),
+            KyutaiVoice(
+                "expresso/ex04-ex02_sarcastic_001_channel2_466s.wav", "Expresso Sarcastic"),
         ]
         return default_voices
 
