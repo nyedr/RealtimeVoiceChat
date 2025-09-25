@@ -4,7 +4,7 @@ import pyaudio
 import logging
 import traceback
 import time
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Callable
 from queue import Queue
 from dataclasses import dataclass
 
@@ -48,7 +48,7 @@ class KyutaiTTSGen:
     """Internal TTS generator class based on the streaming example."""
     tts_model: 'TTSModel'
     attributes: List[ConditionAttributes]
-    on_frame: Optional[callable] = None
+    on_frame: Optional[Callable[[np.ndarray], None]] = None
 
     def __post_init__(self):
         tts_model = self.tts_model
@@ -136,7 +136,8 @@ class KyutaiTTSGen:
             f"KyutaiTTSGen: process() called at {time.time():.6f}, queue_size={queue_size}, threshold={threshold}")
         steps_taken = 0
         # Allow processing even with small queue sizes if force_first_step is enabled and we haven't started yet
-        min_queue_size = 0 if (self.force_first_step and self.offset == 0) else self.tts_model.machine.second_stream_ahead
+        min_queue_size = 0 if (self.force_first_step and self.offset ==
+                               0) else self.tts_model.machine.second_stream_ahead
         while len(self.state.entries) > min_queue_size:
             if steps_taken == 0:
                 logging.info(

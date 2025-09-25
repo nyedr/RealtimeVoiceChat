@@ -1,6 +1,6 @@
 # speech_pipeline_manager.py
 import os
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 import threading
 import logging
 import time
@@ -64,7 +64,7 @@ class PipelineRequest:
     associated data (e.g., text input), and a timestamp for potential de-duplication.
     """
 
-    def __init__(self, action: str, data: Optional[any] = None):
+    def __init__(self, action: str, data: Optional[Any] = None):
         """
         Initializes a PipelineRequest instance.
 
@@ -108,8 +108,6 @@ class RunningGeneration:
         # This is the part of the text that was not used in the context
         self.quick_answer_overhang: str = ""
         self.tts_quick_started: bool = False
-
-        self.tts_quick_allowed_event = threading.Event()
         self.audio_chunks = Queue()
         self.audio_quick_finished: bool = False
         self.audio_quick_aborted: bool = False
@@ -153,10 +151,11 @@ class SpeechPipelineManager:
     def __init__(
         self,
         tts_engine: str = "kokoro",
-        llm_provider: str = "ollama",
+        llm_provider: str = "openai",
         llm_model: str = "hf.co/bartowski/huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated-GGUF:Q4_K_M",
-        no_think: bool = False,
+        no_think: bool = True,
         orpheus_model: str = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf",
+        llm_base_url: Optional[str] = None,
     ):
         """
         Initializes the SpeechPipelineManager.
@@ -177,7 +176,7 @@ class SpeechPipelineManager:
         self.llm_model = llm_model
         self.no_think = no_think
         self.orpheus_model = orpheus_model
-
+        self.llm_base_url = llm_base_url
         self.system_prompt = system_prompt
         if tts_engine == "orpheus":
             self.system_prompt += f"\n{orpheus_prompt_addon}"
@@ -197,6 +196,7 @@ class SpeechPipelineManager:
             model=self.llm_model,
             system_prompt=self.system_prompt,
             no_think=no_think,
+            base_url=self.llm_base_url,
         )
         self.llm.prewarm()
         self.llm_inference_time = self.llm.measure_inference_time()
@@ -839,27 +839,6 @@ class SpeechPipelineManager:
             current_gen.tts_quick_finished_event.clear()
             current_gen.tts_quick_started = True
 
-            # --- tts_quick_allowed_event Wait Logic ---
-            # This event seems intended for external control/timing, but isn't set anywhere
-            # in the current code. Added a timeout and logging for clarity. If it's meant
-            # to be used, something needs to .set() it externally.
-            allowed_to_speak = False
-            start_wait_time = time.time()
-            wait_timeout = 5.0  # Example timeout
-            logger.debug(
-                f"🗣️👄⏳ [Gen {gen_id}] Quick TTS Worker: Waiting for tts_quick_allowed_event (timeout: {wait_timeout}s)...")
-            # TODO: Determine if this event is actually used/needed. If not, remove the wait.
-            # If it IS needed, ensure something sets it. Currently, it might always timeout.
-            # For now, we'll proceed even if it times out, assuming it's optional or not yet implemented.
-            # allowed_to_speak = current_gen.tts_quick_allowed_event.wait(timeout=wait_timeout)
-            # Temporarily bypass wait for testing/if event is unused.
-            allowed_to_speak = True
-            # if not allowed_to_speak:
-            #    logger.warning(f"🗣️👄⏱️ [Gen {gen_id}] Quick TTS Worker: Timed out waiting for tts_quick_allowed_event after {time.time() - start_wait_time:.2f}s. Proceeding anyway.")
-            # else:
-            #    logger.debug(f"🗣️👄✔️ [Gen {gen_id}] Quick TTS Worker: tts_quick_allowed_event received or bypassed.")
-            # --- End tts_quick_allowed_event Wait Logic ---
-
             try:
                 # Ensure Kyutai voice is set based on parsed emotion before synthesis
                 try:
@@ -1197,8 +1176,6 @@ class SpeechPipelineManager:
 
                 # Signal that first audio chunk is expected imminently (unified path bypasses AudioProcessor callback)
                 current_gen.quick_answer_first_chunk_ready = True
-                # Allow TTS if any gating depends on this event
-                current_gen.tts_quick_allowed_event.set()
                 # Mark quick answer as expected so server does not prematurely close cycle
                 current_gen.quick_answer_provided = True
 

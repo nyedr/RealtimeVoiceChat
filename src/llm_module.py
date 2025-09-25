@@ -1,19 +1,17 @@
 # llm_module.py
-import re
 import logging
 import os
 import sys
 import time
 import json
 import uuid
-import subprocess  # <-- Restored usage
+import subprocess
 from typing import Generator, List, Dict, Optional, Any
 from threading import Lock
 
-# --- Library Dependencies ---
+# Library Dependencies
 import requests
-from requests import Session  # Explicit import
-
+from requests import Session
 
 from openai import OpenAI, APIError, APITimeoutError, RateLimitError, APIConnectionError
 
@@ -45,7 +43,6 @@ except ImportError:
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
 
 # --- Backend Client Creation/Check Functions ---
 
@@ -139,7 +136,7 @@ def _check_ollama_connection(base_url: str, session: Optional[Session]) -> bool:
 # --- Restored _run_ollama_ps function ---
 
 
-def _run_ollama_ps():
+def _run_ollama_ps() -> bool:
     """
     Attempts to run the 'ollama ps' command via subprocess.
 
@@ -187,11 +184,11 @@ class LLM:
     """
     Provides a unified interface for interacting with various LLM backends.
 
-    Supports Ollama (via direct HTTP), OpenAI API, and LMStudio (via OpenAI-compatible API).
+    Supports Ollama (via direct HTTP) and OpenAI API (including OpenAI-compatible APIs like LMStudio).
     Handles client initialization, streaming generation, request cancellation,
     system prompts, and basic connection management including an optional `ollama ps` check.
     """
-    SUPPORTED_BACKENDS = ["ollama", "openai", "lmstudio"]
+    SUPPORTED_BACKENDS = ["ollama", "openai"]
 
     def __init__(
         self,
@@ -206,11 +203,11 @@ class LLM:
         Initializes the LLM interface for a specific backend and model.
 
         Args:
-            backend: The name of the LLM backend to use (e.g., "ollama", "openai", "lmstudio").
+            backend: The name of the LLM backend to use (e.g., "ollama", "openai").
             model: The identifier for the specific model to use within the backend.
             system_prompt: An optional system prompt to prepend to conversations.
             api_key: API key, primarily for OpenAI backend (can be omitted for others if not needed).
-            base_url: Optional base URL for the backend API (overrides defaults/env vars).
+            base_url: Optional base URL for the backend API (overrides defaults/env vars). For OpenAI-compatible APIs like LMStudio, set backend="openai" and provide the LMStudio base URL here.
             no_think: Experimental flag (currently unused in core logic, intended for future prompt modification).
 
         Raises:
@@ -243,7 +240,6 @@ class LLM:
 
         self.effective_openai_key = self._api_key or OPENAI_API_KEY
         self.effective_ollama_url = self._base_url or OLLAMA_BASE_URL if self.backend == "ollama" else None
-        self.effective_lmstudio_url = self._base_url or LMSTUDIO_BASE_URL if self.backend == "lmstudio" else None
         self.effective_openai_base_url = self._base_url if self.backend == "openai" and self._base_url else None
 
         if self.backend == "ollama" and self.effective_ollama_url:
@@ -260,7 +256,7 @@ class LLM:
             self.ollama_session = requests.Session()
             logger.info("🤖🔌 Initialized requests.Session for Ollama backend.")
 
-        self.system_prompt_message = None
+        self.system_prompt_message: Optional[Dict[str, str]] = None
         if self.system_prompt:
             self.system_prompt_message = {
                 "role": "system", "content": self.system_prompt}
@@ -279,7 +275,7 @@ class LLM:
             False otherwise.
         """
         if self._client_initialized:
-            if self.backend in ["openai", "lmstudio"]:
+            if self.backend == "openai":
                 return self.client is not None
             if self.backend == "ollama":
                 return self.ollama_session is not None and self._ollama_connection_ok  # Check flag
@@ -287,7 +283,7 @@ class LLM:
 
         with self._client_init_lock:
             if self._client_initialized:  # Double check
-                if self.backend in ["openai", "lmstudio"]:
+                if self.backend == "openai":
                     return self.client is not None
                 if self.backend == "ollama":
                     return self.ollama_session is not None and self._ollama_connection_ok
@@ -302,10 +298,6 @@ class LLM:
                 if self.backend == "openai":
                     self.client = _create_openai_client(
                         self.effective_openai_key, base_url=self.effective_openai_base_url)
-                    init_ok = self.client is not None
-                elif self.backend == "lmstudio":
-                    self.client = _create_openai_client(
-                        api_key="lmstudio-key", base_url=self.effective_lmstudio_url)
                     init_ok = self.client is not None
                 elif self.backend == "ollama":
                     if self.ollama_session and self.effective_ollama_url:
@@ -716,34 +708,15 @@ class LLM:
                         "OpenAI client not initialized (should have been caught by lazy_init).")
                 payload = {"model": self.model,
                            "messages": messages, "stream": True, **kwargs}
-                logger.info(
+                logger.debug(
                     f"🤖💬 [{req_id}] Sending OpenAI request with payload:")
-                logger.info(f"{json.dumps(payload, indent=2)}")
+                logger.debug(f"{json.dumps(payload, indent=2)}")
                 stream_iterator = self.client.chat.completions.create(
                     model=self.model, messages=messages, stream=True, **kwargs
                 )
                 stream_object_to_register = stream_iterator  # The Stream object itself
                 self._register_request(
                     req_id, "openai", stream_object_to_register)
-                yield from self._yield_openai_chunks(stream_iterator, req_id)
-
-            elif self.backend == "lmstudio":
-                if self.client is None:
-                    raise RuntimeError(
-                        "LM Studio client not initialized (should have been caught by lazy_init).")
-                if 'temperature' not in kwargs:
-                    kwargs['temperature'] = 0.7
-                payload = {"model": self.model,
-                           "messages": messages, "stream": True, **kwargs}
-                logger.info(
-                    f"🤖💬 [{req_id}] Sending LM Studio request with payload:")
-                logger.info(f"{json.dumps(payload, indent=2)}")
-                stream_iterator = self.client.chat.completions.create(
-                    model=self.model, messages=messages, stream=True, **kwargs
-                )
-                stream_object_to_register = stream_iterator  # The Stream object itself
-                self._register_request(
-                    req_id, "lmstudio", stream_object_to_register)
                 yield from self._yield_openai_chunks(stream_iterator, req_id)
 
             elif self.backend == "ollama":
@@ -769,8 +742,8 @@ class LLM:
                     "options": options
                 }
                 logger.info(
-                    f"🤖💬 [{req_id}] Sending Ollama request to {ollama_api_url} with payload:")
-                logger.info(f"{json.dumps(payload, indent=2)}")
+                    f"🤖💬 [{req_id}] Sending Ollama request to {ollama_api_url}")
+                logger.debug(f"{json.dumps(payload, indent=2)}")
                 # Increase read timeout significantly for generation
                 response = self.ollama_session.post(
                     # (connect_timeout, read_timeout)
@@ -1312,111 +1285,3 @@ class LLMGenerationContext:
         self._entered = False
         # If an exception occurred, don't suppress it
         return False
-
-
-# --- Example Usage ---
-if __name__ == "__main__":
-    # Setup logging for the example itself
-    # Use basicConfig here as it's the main script
-    main_log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
-    main_log_level = getattr(logging, main_log_level_str, logging.INFO)
-    logging.basicConfig(level=main_log_level,
-                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                        stream=sys.stdout)
-    main_logger = logging.getLogger(__name__)  # Logger for this __main__ block
-    # Modified title
-    main_logger.info(
-        "🤖🚀 --- Running LLM Module Example (With Ollama PS Check Restored) ---")
-
-    # --- Ollama Example ---
-    ollama_llm = None
-    try:
-        # Ensure OLLAMA_MODEL env var is set or use a default
-        ollama_model_env = os.getenv("OLLAMA_MODEL")
-        if not ollama_model_env:
-            main_logger.warning(
-                "🤖⚠️ OLLAMA_MODEL environment variable not set. Using default 'llama3:instruct'.")
-            ollama_model_env = "llama3:instruct"
-
-        main_logger.info(
-            f"\n🤖⚙️ --- Initializing Ollama ({ollama_model_env}) ---")
-        # Pass the model name fetched from env var
-        ollama_llm = LLM(
-            backend="ollama",
-            model=ollama_model_env,
-            system_prompt="You are concise and helpful."
-        )
-
-        # Prewarm will now trigger lazy init WITH the ps check fallback restored
-        main_logger.info(
-            "🤖🔥 --- Running Ollama Prewarm (will trigger lazy init with ps check if needed) ---")
-        # Only one attempt for prewarm after init
-        prewarm_success = ollama_llm.prewarm(max_retries=0)
-
-        if prewarm_success:
-            main_logger.info("🤖✅ Ollama Prewarm/Initialization OK.")
-
-            # --- Run Measurement ---
-            main_logger.info(
-                "🤖⏱️ --- Running Ollama Inference Time Measurement ---")
-            inf_time = ollama_llm.measure_inference_time(
-                num_tokens=10, temperature=0.1)
-            if inf_time is not None:
-                main_logger.info(
-                    f"🤖⏱️ --- Measured Inference Time: {inf_time:.2f} ms ---")
-            else:
-                main_logger.warning(
-                    "🤖⏱️⚠️ --- Inference Time Measurement Failed ---")
-
-            # --- Run Generation ---
-            main_logger.info(
-                "🤖▶️ --- Running Ollama Generation via Context (Post-Prewarm) ---")
-            try:
-                # Use the context manager
-                with LLMGenerationContext(ollama_llm, "What is the capital of France? Respond briefly.") as generator:
-                    print("\nOllama Response: ", end="", flush=True)
-                    response_text = ""
-                    for token in generator:
-                        print(token, end="", flush=True)
-                        response_text += token
-                    print("\n")  # Newline after response
-                main_logger.info("🤖✅ Ollama generation complete.")
-
-                # Example of direct generate call (after context)
-                main_logger.info(
-                    "🤖💬 --- Running Ollama Generation via direct call ---")
-                direct_gen = ollama_llm.generate(
-                    "List three large cities in Germany.")
-                print("\nOllama Direct Response: ", end="", flush=True)
-                for token in direct_gen:
-                    print(token, end="", flush=True)
-                print("\n")
-                main_logger.info("🤖✅ Ollama direct generation complete.")
-
-            except (ConnectionError, RuntimeError, Exception) as e:
-                # Catch specific ConnectionError raised on init/gen failure
-                if isinstance(e, ConnectionError):
-                    main_logger.error(
-                        f"🤖💥 Ollama Connection Error during Generation: {e}")
-                    main_logger.error(
-                        "   🤖🔌 Please ensure the Ollama server is running and accessible at the configured URL.")
-                else:
-                    main_logger.error(
-                        f"🤖💥 Ollama Generation Runtime/Other Error: {e}", exc_info=True)
-
-        else:
-            main_logger.error(
-                "🤖❌ Ollama Prewarm/Initialization Failed. Could not connect or encountered error. Skipping measurement and generation tests.")
-
-    except (ImportError, ValueError, Exception) as e:
-        main_logger.error(
-            f"🤖💥 Failed to initialize or run Ollama: {e}", exc_info=True)
-    else:
-        main_logger.warning(
-            "🤖⚠️ Skipping Ollama tests: 'requests' library not installed.")
-
-    # --- Add LMStudio/OpenAI examples if needed ---
-    # ... (similar structure, ensure OPENAI_AVAILABLE check)
-
-    main_logger.info("\n" + "="*40)
-    main_logger.info("🤖🏁 --- LLM Module Example Script Finished ---")

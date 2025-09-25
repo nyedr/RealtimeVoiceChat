@@ -30,23 +30,38 @@ logger = logging.getLogger(__name__)
 # Logging is now properly configured with custom formatter
 logger.info("🖥️👋 Welcome to local real-time voice chat")
 
-USE_SSL = False
-TTS_START_ENGINE = "orpheus"
-TTS_START_ENGINE = "coqui"
-TTS_START_ENGINE = "kokoro"
-TTS_START_ENGINE = "kyutai"
-TTS_ORPHEUS_MODEL = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf"
 
-LLM_START_PROVIDER = "lmstudio"
-LLM_START_MODEL = "qwen3-8b-abliterated"
-# LLM_START_MODEL = "qwen3-4b-instruct"
-# LLM_START_MODEL = "silly-v0.2"
+class ServerConfig:
+    """Centralized configuration with environment fallbacks."""
 
-NO_THINK = True
-DIRECT_STREAM = TTS_START_ENGINE in ["orpheus", "kyutai"]
+    def __init__(self) -> None:
+        self.use_ssl: bool = False
+        self.tts_engine: str = os.getenv("TTS_ENGINE", "kyutai")
+        self.tts_orpheus_model: str = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf"
+        self.llm_model: str = os.getenv("LLM_MODEL", "qwen3-8b-abliterated")
+        self.llm_provider: str = os.getenv("LLM_PROVIDER", "openai")
+        self.openai_base_url: str = os.getenv(
+            "OPENAI_BASE_URL", "http://127.0.0.1:1234/v1")
+        self.no_think: bool = True
+
+    @property
+    def direct_stream(self) -> bool:
+        return self.tts_engine in ["orpheus", "kyutai"]
+
+
+CFG = ServerConfig()
+
+USE_SSL = CFG.use_ssl
+TTS_ENGINE = CFG.tts_engine
+TTS_ORPHEUS_MODEL = CFG.tts_orpheus_model
+LLM_MODEL = CFG.llm_model
+LLM_PROVIDER = CFG.llm_provider
+OPENAI_BASE_URL = CFG.openai_base_url
+NO_THINK = CFG.no_think
+DIRECT_STREAM = CFG.direct_stream
 
 logger.info(
-    f"🖥️⚙️ {Colors.apply('[PARAM]').blue} Starting engine: {Colors.apply(TTS_START_ENGINE).blue}")
+    f"🖥️⚙️ {Colors.apply('[PARAM]').blue} Starting engine: {Colors.apply(TTS_ENGINE).blue}")
 logger.info(
     f"🖥️⚙️ {Colors.apply('[PARAM]').blue} Direct streaming: {Colors.apply('ON' if DIRECT_STREAM else 'OFF').blue}")
 
@@ -123,17 +138,18 @@ async def lifespan(app: FastAPI):
     logger.info("🖥️▶️ Server starting up")
     # Initialize global components, not connection-specific state
     app.state.SpeechPipelineManager = SpeechPipelineManager(
-        tts_engine=TTS_START_ENGINE,
-        llm_provider=LLM_START_PROVIDER,
-        llm_model=LLM_START_MODEL,
+        tts_engine=TTS_ENGINE,
+        llm_provider=LLM_PROVIDER,
+        llm_model=LLM_MODEL,
         no_think=NO_THINK,
         orpheus_model=TTS_ORPHEUS_MODEL,
+        llm_base_url=OPENAI_BASE_URL,
     )
 
     app.state.Upsampler = UpsampleOverlap()
     app.state.AudioInputProcessor = AudioInputProcessor(
         LANGUAGE,
-        is_orpheus=TTS_START_ENGINE in ["orpheus", "kyutai"],
+        is_orpheus=TTS_ENGINE in ["orpheus", "kyutai"],
         pipeline_latency=app.state.SpeechPipelineManager.full_output_pipeline_latency / 1000,  # seconds
     )
     # Keep this? Its usage isn't clear in the provided snippet. Minimizing changes.
@@ -591,9 +607,6 @@ async def send_tts_chunks(app: FastAPI, message_queue: asyncio.Queue, callbacks:
                 log_status()
                 continue
 
-            if not app.state.SpeechPipelineManager.running_generation.audio_quick_finished:
-                app.state.SpeechPipelineManager.running_generation.tts_quick_allowed_event.set()
-
             if not app.state.SpeechPipelineManager.running_generation.quick_answer_first_chunk_ready:
                 await asyncio.sleep(0.001)
                 log_status()
@@ -841,7 +854,6 @@ class TranscriptionCallbacks:
         # Access global manager state
         if self.app.state.SpeechPipelineManager.running_generation and not self.app.state.SpeechPipelineManager.running_generation.abortion_started:
             logger.info(f"{Colors.apply('🖥️🔊 TTS ALLOWED').blue}")
-            self.app.state.SpeechPipelineManager.running_generation.tts_quick_allowed_event.set()
 
     def on_potential_sentence(self, txt: str):
         """
@@ -893,7 +905,6 @@ class TranscriptionCallbacks:
         if self.app.state.SpeechPipelineManager.is_valid_gen():
             logger.info(
                 f"{Colors.apply('🖥️🔊 TTS ALLOWED (before final)').blue}")
-            self.app.state.SpeechPipelineManager.running_generation.tts_quick_allowed_event.set()
 
         # first block further incoming audio (Audio processor's state)
         if not self.app.state.AudioInputProcessor.interrupted:

@@ -13,7 +13,7 @@ from huggingface_hub import hf_hub_download
 # Assuming RealtimeTTS is installed and available
 from RealtimeTTS import (CoquiEngine, KokoroEngine, OrpheusEngine,
                          OrpheusVoice, TextToAudioStream)
-from .kyutai_engine import KyutaiEngine, KyutaiVoice
+from .kyutai_engine import KyutaiEngine
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,8 @@ ENGINE_SILENCES = {
 QUICK_ANSWER_STREAM_CHUNK_SIZE = 8
 FINAL_ANSWER_STREAM_CHUNK_SIZE = 30
 
-# Coqui model download helper functions
+# Orpheus model path
+ORPHEUS_MODEL = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf"
 
 
 def create_directory(path: str) -> None:
@@ -86,7 +87,7 @@ class AudioProcessor:
     def __init__(
         self,
         engine: str = START_ENGINE,
-        orpheus_model: str = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf",
+        orpheus_model: str = ORPHEUS_MODEL,
     ) -> None:
         """
         Initializes the AudioProcessor with a specific TTS engine.
@@ -279,6 +280,23 @@ class AudioProcessor:
                 logger.warning(
                     f"👄⚠️ Failed to build Kyutai voice map dynamically: {e}")
 
+    def _flush_buffer_to_queue(self, buffer: list[bytes], audio_chunks: Queue) -> bool:
+        """
+        Flushes buffered audio chunks to the queue.
+
+        Returns True if at least one chunk was enqueued.
+        """
+        put_any = False
+        while buffer:
+            chunk = buffer.pop(0)
+            try:
+                audio_chunks.put_nowait(chunk)
+                put_any = True
+            except asyncio.QueueFull:
+                logger.warning(
+                    "👄⚠️ Audio queue full, dropping chunk during buffer flush.")
+        return put_any
+
     def on_audio_stream_stop(self) -> None:
         """
         Callback executed when the RealtimeTTS audio stream stops processing.
@@ -438,14 +456,8 @@ class AudioProcessor:
                 if good_streak >= 2 or buf_dur >= 0.5:  # Flush if stable or buffer > 0.5s
                     logger.info(
                         f"👄➡️ {generation_string} Quick Flushing buffer (streak={good_streak}, dur={buf_dur:.2f}s).")
-                    for c in buffer:
-                        try:
-                            audio_chunks.put_nowait(c)
-                            put_occurred_this_call = True
-                        except asyncio.QueueFull:
-                            logger.warning(
-                                f"👄⚠️ {generation_string} Quick audio queue full, dropping chunk.")
-                    buffer.clear()
+                    if self._flush_buffer_to_queue(buffer, audio_chunks):
+                        put_occurred_this_call = True
                     buf_dur = 0.0  # Reset buffer duration
                     buffering = False  # Stop buffering mode
             else:  # Not buffering, put chunk directly
@@ -506,13 +518,7 @@ class AudioProcessor:
         if buffering and buffer and not stop_event.is_set():
             logger.info(
                 f"👄➡️ {generation_string} Quick Flushing remaining buffer after stream finished.")
-            for c in buffer:
-                try:
-                    audio_chunks.put_nowait(c)
-                except asyncio.QueueFull:
-                    logger.warning(
-                        f"👄⚠️ {generation_string} Quick audio queue full on final flush, dropping chunk.")
-            buffer.clear()
+            self._flush_buffer_to_queue(buffer, audio_chunks)
 
         logger.info(
             f"👄✅ {generation_string} Quick answer synthesis complete. Text: {text[:50]}...")
@@ -631,14 +637,8 @@ class AudioProcessor:
                 if good_streak >= 2 or buf_dur >= 0.5:  # Same flush logic as synthesize
                     logger.info(
                         f"👄➡️ {generation_string} Final Flushing buffer (streak={good_streak}, dur={buf_dur:.2f}s).")
-                    for c in buffer:
-                        try:
-                            audio_chunks.put_nowait(c)
-                            put_occurred_this_call = True
-                        except asyncio.QueueFull:
-                            logger.warning(
-                                f"👄⚠️ {generation_string} Final audio queue full, dropping chunk.")
-                    buffer.clear()
+                    if self._flush_buffer_to_queue(buffer, audio_chunks):
+                        put_occurred_this_call = True
                     buf_dur = 0.0
                     buffering = False
             else:  # Not buffering
@@ -702,13 +702,7 @@ class AudioProcessor:
         if buffering and buffer and not stop_event.is_set():
             logger.info(
                 f"👄➡️ {generation_string} Final Flushing remaining buffer after stream finished.")
-            for c in buffer:
-                try:
-                    audio_chunks.put_nowait(c)
-                except asyncio.QueueFull:
-                    logger.warning(
-                        f"👄⚠️ {generation_string} Final audio queue full on final flush, dropping chunk.")
-            buffer.clear()
+            self._flush_buffer_to_queue(buffer, audio_chunks)
 
         logger.info(f"👄✅ {generation_string} Final answer synthesis complete.")
         return True  # Indicate successful completion
