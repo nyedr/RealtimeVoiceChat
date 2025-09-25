@@ -242,24 +242,42 @@ class AudioProcessor:
         # Mapping of emotion tags to Kyutai voice identifiers
         # Only used when engine_name == "kyutai"
         # Voice mapping based on get_voices() method from kyutai_engine.py
-        self.KYUTAI_EMOTION_TO_VOICE: dict[str, str] = {
-            "default": "expresso/ex01-ex02_default_001_channel2_198s.wav",
-            "neutral": "expresso/ex03-ex01_neutral_001_channel1_334s.wav",
-            "happy": "expresso/ex04-ex02_happy_001_channel2_140s.wav",
-            "sad": "expresso/ex03-ex01_sad_001_channel1_334s.wav",
-            "enunciated": "expresso/ex01-ex02_enunciated_001_channel2_354s.wav",
-            "fast": "expresso/ex01-ex02_fast_001_channel2_73s.wav",
-            "projected": "expresso/ex01-ex02_projected_002_channel2_248s.wav",
-            "whisper": "expresso/ex01-ex02_whisper_001_channel2_717s.wav",
-            "disgusted": "expresso/ex04-ex01_disgusted_001_channel1_130s.wav",
-            "laughing": "expresso/ex04-ex01_laughing_001_channel1_306s.wav",
-            "awe": "expresso/ex04-ex02_awe_001_channel2_1013s.wav",
-            "bored": "expresso/ex04-ex02_bored_001_channel2_232s.wav",
-            "confused": "expresso/ex04-ex02_confused_001_channel2_488s.wav",
-            "desire": "expresso/ex04-ex02_desire_001_channel2_694s.wav",
-            "fearful": "expresso/ex04-ex02_fearful_001_channel2_266s.wav",
-            "sarcastic": "expresso/ex04-ex02_sarcastic_001_channel2_466s.wav",
-        }
+        # Build voice map from engine voices to avoid typos/404 and preload paths
+        self.KYUTAI_EMOTION_TO_VOICE: dict[str, str] = {}
+        if self.engine_name == "kyutai":
+            try:
+                voices = self.engine.get_voices()
+                name_to_path = {v.name.lower(): v.voice_path for v in voices}
+                # Map emotions to closest available voice names
+                preferred = {
+                    "default": ["expresso default", "default"],
+                    "neutral": ["expresso neutral", "neutral"],
+                    "happy": ["expresso happy", "happy"],
+                    "sad": ["expresso sad", "sad"],
+                    "enunciated": ["expresso enunciated", "enunciated"],
+                    "fast": ["expresso fast", "fast"],
+                    "projected": ["expresso projected", "projected"],
+                    "whisper": ["expresso whisper", "whisper"],
+                    "disgusted": ["expresso disgusted", "disgusted"],
+                    "laughing": ["expresso laughing", "laughing"],
+                    "awe": ["expresso awe", "awe"],
+                    "bored": ["expresso bored", "bored"],
+                    "confused": ["expresso confused", "confused"],
+                    "desire": ["expresso desire", "desire"],
+                    "fearful": ["expresso fearful", "fearful"],
+                    "sarcastic": ["expresso sarcastic", "sarcastic"],
+                }
+                for emo, candidates in preferred.items():
+                    for cand in candidates:
+                        if cand in name_to_path:
+                            self.KYUTAI_EMOTION_TO_VOICE[emo] = name_to_path[cand]
+                            break
+                # Ensure default exists
+                if "default" not in self.KYUTAI_EMOTION_TO_VOICE and voices:
+                    self.KYUTAI_EMOTION_TO_VOICE["default"] = voices[0].voice_path
+            except Exception as e:
+                logger.warning(
+                    f"👄⚠️ Failed to build Kyutai voice map dynamically: {e}")
 
     def on_audio_stream_stop(self) -> None:
         """

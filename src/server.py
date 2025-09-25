@@ -38,9 +38,9 @@ TTS_START_ENGINE = "kyutai"
 TTS_ORPHEUS_MODEL = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf"
 
 LLM_START_PROVIDER = "lmstudio"
-# LLM_START_MODEL = "qwen3-8b-abliterated"
+LLM_START_MODEL = "qwen3-8b-abliterated"
 # LLM_START_MODEL = "qwen3-4b-instruct"
-LLM_START_MODEL = "silly-v0.2"
+# LLM_START_MODEL = "silly-v0.2"
 
 NO_THINK = True
 DIRECT_STREAM = TTS_START_ENGINE in ["orpheus", "kyutai"]
@@ -513,6 +513,15 @@ async def send_tts_chunks(app: FastAPI, message_queue: asyncio.Queue, callbacks:
         last_chunk_sent = 0
         prev_status = None
 
+        # --- Pacing config (simple realtime queue) ---
+        SR = 24000  # Kyutai sample rate (mono, 16-bit)
+        PREBUFFER_SEC = 0.10  # small prebuffer to avoid initial stutter
+        pacing_started = False
+        pacing_start_monotonic = 0.0
+        samples_emitted = 0
+        prebuffer_chunks: list[str] = []
+        prebuffer_samples: int = 0
+
         while True:
             await asyncio.sleep(0.001)  # Yield control
 
@@ -626,12 +635,66 @@ async def send_tts_chunks(app: FastAPI, message_queue: asyncio.Queue, callbacks:
                 log_status()
                 continue
 
+            # --- Pacing / Prebuffer ---
             base64_chunk = app.state.Upsampler.get_base64_chunk(chunk)
-            message_queue.put_nowait({
-                "type": "tts_chunk",
-                "content": base64_chunk
-            })
-            last_chunk_sent = time.time()
+
+            # Estimate duration by PCM size: bytes -> samples (16-bit mono)
+            try:
+                pcm_bytes = len(chunk)
+                chunk_samples = pcm_bytes // 2
+            except Exception:
+                chunk_samples = 0
+
+            if not pacing_started:
+                # Prebuffer until threshold reached
+                prebuffer_chunks.append(base64_chunk)
+                prebuffer_samples += chunk_samples
+                # Send the very first chunk immediately to minimize TTFA, then prebuffer
+                if len(prebuffer_chunks) == 1:
+                    message_queue.put_nowait({
+                        "type": "tts_chunk",
+                        "content": prebuffer_chunks[0]
+                    })
+                    samples_emitted += chunk_samples
+                if prebuffer_samples / SR >= PREBUFFER_SEC:
+                    pacing_started = True
+                    pacing_start_monotonic = time.monotonic()
+                    # Flush remaining prebuffered chunks at paced rate (skip the first which we already sent)
+                    for b64 in prebuffer_chunks[1:]:
+                        target_time = pacing_start_monotonic + \
+                            (samples_emitted / SR)
+                        delay = target_time - time.monotonic()
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                        message_queue.put_nowait({
+                            "type": "tts_chunk",
+                            "content": b64
+                        })
+                        # Track samples precisely using prebuffer_samples
+                        try:
+                            # Estimate samples for this base64 frame using total prebuffer
+                            # As a simple approximation, distribute evenly
+                            samples_emitted += max(0, prebuffer_samples //
+                                                   max(1, len(prebuffer_chunks)))
+                        except Exception:
+                            pass
+                    prebuffer_chunks.clear()
+                    prebuffer_samples = 0
+                # Do not send further while building prebuffer
+                last_chunk_sent = time.time()
+                continue
+            else:
+                # Pace outgoing chunks relative to stream start
+                target_time = pacing_start_monotonic + (samples_emitted / SR)
+                delay = target_time - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                message_queue.put_nowait({
+                    "type": "tts_chunk",
+                    "content": base64_chunk
+                })
+                samples_emitted += chunk_samples
+                last_chunk_sent = time.time()
 
             # Use connection-specific state via callbacks
             if not callbacks.tts_chunk_sent:

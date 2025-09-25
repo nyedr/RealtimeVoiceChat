@@ -3,6 +3,7 @@ import numpy as np
 import pyaudio
 import logging
 import traceback
+import time
 from typing import Optional, Union, List
 from queue import Queue
 from dataclasses import dataclass
@@ -54,6 +55,9 @@ class KyutaiTTSGen:
         attributes = self.attributes
         self.offset = 0
         self.state = self.tts_model.machine.new_state([])
+        # Logging/behavior flags
+        # Set to True to force an immediate first step after first entry
+        self.force_first_step = False
 
         if tts_model.cfg_coef != 1.0:
             if tts_model.valid_cfg_conditionings:
@@ -126,11 +130,32 @@ class KyutaiTTSGen:
 
     def process(self):
         """Process entries while maintaining streaming threshold."""
-        while len(self.state.entries) > self.tts_model.machine.second_stream_ahead:
+        queue_size = len(self.state.entries)
+        threshold = self.tts_model.machine.second_stream_ahead
+        logging.info(
+            f"KyutaiTTSGen: process() called at {time.time():.6f}, queue_size={queue_size}, threshold={threshold}")
+        steps_taken = 0
+        # Allow processing even with small queue sizes if force_first_step is enabled and we haven't started yet
+        min_queue_size = 0 if (self.force_first_step and self.offset == 0) else self.tts_model.machine.second_stream_ahead
+        while len(self.state.entries) > min_queue_size:
+            if steps_taken == 0:
+                logging.info(
+                    f"KyutaiTTSGen: Starting to step at {time.time():.6f} (queue_size={len(self.state.entries)} > min_queue_size={min_queue_size})")
             self._step()
+            steps_taken += 1
+            # After first step with force_first_step, revert to normal threshold
+            if self.force_first_step and steps_taken == 1:
+                min_queue_size = self.tts_model.machine.second_stream_ahead
+        if steps_taken > 0:
+            logging.info(
+                f"KyutaiTTSGen: Completed {steps_taken} steps, queue_size now={len(self.state.entries)}")
 
     def _step(self):
         """Process a single step of generation."""
+        if self.offset == 0:
+            logging.info(
+                f"KyutaiTTSGen: First _step() called at {time.time():.6f}")
+
         missing = self.tts_model.lm.n_q - self.tts_model.lm.dep_q
         input_tokens = torch.full(
             (1, missing, 1),
@@ -146,6 +171,17 @@ class KyutaiTTSGen:
     def append_entry(self, entry):
         """Add an entry to the generation queue."""
         self.state.entries.append(entry)
+        try:
+            queue_size = len(self.state.entries)
+            threshold = self.tts_model.machine.second_stream_ahead
+            logging.info(
+                f"KyutaiEngine: Appended entry at {time.time():.6f}, queue size: {queue_size}, threshold: {threshold}")
+            if self.force_first_step and self.offset == 0 and queue_size > 0:
+                logging.info(
+                    f"KyutaiTTSGen: Forcing immediate first step (queue_size={queue_size})")
+                self._step()
+        except Exception:
+            pass
 
 
 class KyutaiEngine(BaseEngine):
@@ -203,6 +239,10 @@ class KyutaiEngine(BaseEngine):
         self.tts_gen = None
         self.mimi_streaming_context = None
         self.lm_streaming_context = None
+
+        # Streaming/voice coordination
+        self.streaming_active = False
+        self._pending_voice: Optional[KyutaiVoice] = None
 
         self.post_init()
 
@@ -313,6 +353,148 @@ class KyutaiEngine(BaseEngine):
             # Return default values if model not loaded yet
             return pyaudio.paInt16, 1, 24000
         return pyaudio.paInt16, 1, self.tts_model.mimi.sample_rate
+
+    def synthesize_generator(self, generator, audio_queue, stop_event):
+        """
+        Synthesize audio from a text generator using Kyutai TTS with proper streaming context management.
+
+        Args:
+            generator: A generator yielding text chunks.
+            audio_queue: Queue to put audio chunks into.
+            stop_event: Event to signal stopping.
+
+        Returns:
+            bool: True if synthesis was successful.
+        """
+        if self.tts_model is None:
+            logging.error("TTS model not loaded")
+            return False
+
+        try:
+            # Log TTS model configuration values for TTFA analysis
+            logging.info(
+                f"KyutaiEngine: TTS Config - second_stream_ahead={self.tts_model.machine.second_stream_ahead}, "
+                f"initial_padding={self.tts_model.machine.initial_padding}, "
+                f"max_padding={self.tts_model.machine.max_padding}, "
+                f"delay_steps={self.tts_model.delay_steps}, "
+                f"mimi_frame_rate={self.tts_model.mimi.frame_rate:.1f}, "
+                f"audio_delay_est={self.tts_model.delay_steps / self.tts_model.mimi.frame_rate:.3f}s"
+            )
+
+            # Apply any pending voice update before opening streaming contexts
+            if self._pending_voice is not None:
+                try:
+                    self.voice = self._pending_voice
+                    self._pending_voice = None
+                    self._update_voice_conditions()
+                    logging.info(
+                        "KyutaiEngine: applied pending voice before synthesis start")
+                except Exception as e:
+                    logging.warning(
+                        f"KyutaiEngine: failed to apply pending voice: {e}")
+
+            # Set up frame callback to put audio in queue
+            first_audio_frame_logged = False
+
+            def on_frame(frame):
+                nonlocal first_audio_frame_logged
+                if stop_event.is_set():
+                    return
+
+                if (frame != -1).all():
+                    # Detach gradients before converting to numpy
+                    pcm = self.tts_model.mimi.decode(
+                        frame[:, 1:, :]).detach().cpu().numpy()
+                    audio_data = np.clip(pcm[0, 0], -1, 1)
+
+                    # Convert to int16 for PyAudio
+                    audio_data = (audio_data * 32767).astype(np.int16)
+                    audio_queue.put(audio_data.tobytes())
+
+                    # Log first audio frame decoding timing
+                    if not first_audio_frame_logged:
+                        logging.info(
+                            f"KyutaiEngine: First audio frame decoded at {time.time():.6f}, "
+                            f"{len(audio_data)} samples -> queue")
+                        first_audio_frame_logged = True
+
+                    if self.debug:
+                        logging.debug(
+                            f"Generated audio chunk: {len(audio_data)} samples")
+
+            # Ensure any previously-open streaming contexts are closed to avoid conflicts
+            if hasattr(self, 'lm_streaming_context') and self.lm_streaming_context is not None:
+                try:
+                    self.lm_streaming_context.__exit__(None, None, None)
+                except Exception:
+                    pass
+                self.lm_streaming_context = None
+
+            if hasattr(self, 'mimi_streaming_context') and self.mimi_streaming_context is not None:
+                try:
+                    self.mimi_streaming_context.__exit__(None, None, None)
+                except Exception:
+                    pass
+                self.mimi_streaming_context = None
+
+            # Open fresh streaming contexts for this synthesis session
+            self.streaming_active = True
+            with self.tts_model.mimi.streaming(1):
+                tts_gen = KyutaiTTSGen(
+                    self.tts_model,
+                    [self.condition_attributes],
+                    on_frame=on_frame
+                )
+                tts_gen.force_first_step = True  # Force immediate processing of the first entry
+
+                with tts_gen.lm_gen.streaming(1):
+                    logging.info(
+                        f"KyutaiEngine: Synthesis loop starting at {time.time():.6f} (streaming contexts opened)")
+                    # Process text chunks from generator
+                    for text_chunk in generator:
+                        if stop_event.is_set():
+                            logging.info(
+                                "KyutaiEngine: synthesis stopped by user")
+                            return False
+
+                        if not text_chunk or not text_chunk.strip():
+                            logging.debug(
+                                f"KyutaiEngine: Skipping empty text chunk")
+                            continue
+
+                        logging.debug(
+                            f"KyutaiEngine: Processing text chunk: '{text_chunk[:30]}...'")
+
+                        # Prepare script entries for this chunk
+                        stripped_text = text_chunk.strip()
+                        if not stripped_text:
+                            logging.debug(
+                                "KyutaiEngine: Text chunk is empty after stripping, skipping")
+                            continue
+                        entries = self._prepare_script(
+                            stripped_text, first_turn=False)
+                        logging.debug(
+                            f"KyutaiEngine: Prepared {len(entries)} entries for text: '{stripped_text[:30]}...'")
+
+                        # Process entries
+                        for entry in entries:
+                            if stop_event.is_set():
+                                return False
+                            tts_gen.append_entry(entry)
+                            tts_gen.process()
+
+                    # Process any remaining entries
+                    tts_gen.process_last()
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Kyutai synthesis error: {e}")
+            if self.debug:
+                traceback.print_exc()
+            return False
+        finally:
+            self.streaming_active = False
 
     def synthesize(self, text) -> bool:
         """
@@ -473,10 +655,23 @@ class KyutaiEngine(BaseEngine):
 
         # Update voice conditions if model is loaded
         if self.tts_model is not None:
-            self._update_voice_conditions()
-            # Reinitialize TTS generator with new voice conditions
-            if self.tts_gen is not None:
-                self._reinitialize_tts_generator()
+            # If currently streaming, defer voice update until the next synthesis start
+            if getattr(self, 'streaming_active', False):
+                try:
+                    self._pending_voice = self.voice
+                    logging.warning(
+                        "KyutaiEngine: set_voice deferred (streaming active)")
+                except Exception as e:
+                    logging.warning(
+                        f"KyutaiEngine: failed to defer voice: {e}")
+                return
+            try:
+                self._update_voice_conditions()
+                # Reinitialize TTS generator with new voice conditions (if pre-initialized)
+                if self.tts_gen is not None:
+                    self._reinitialize_tts_generator()
+            except Exception as e:
+                logging.warning(f"Delaying set_voice due to error: {e}")
 
     def set_voice_parameters(self, **voice_parameters):
         """
